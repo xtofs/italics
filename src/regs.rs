@@ -1,6 +1,6 @@
 use core::fmt;
 
-use crate::ids::TypeVar;
+use crate::vars::TypeVar;
 use crate::types::Type;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

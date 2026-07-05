@@ -1,21 +1,16 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::constraints::Constraint;
-use crate::ids::TypeVar;
 use crate::types::{FuncType, Row, Type};
+use crate::vars::TypeVar;
 use crate::{Instr, TypeVarGenerator};
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum Kind {
-    Type,
-    Row,
-}
 
 #[derive(Debug)]
 pub struct Solver<'a> {
-    pub subs: HashMap<TypeVar, Type>,
-    pub kinds: HashMap<TypeVar, Kind>,
+    pub substitutions: HashMap<TypeVar, Type>,
+    // pub kinds: HashMap<TypeVar, Kind>,
     pub tvg: &'a mut TypeVarGenerator,
+    pub row_tail_vars: HashSet<TypeVar>,
 }
 
 #[derive(Debug)]
@@ -26,14 +21,17 @@ pub enum TypeError {
 impl<'a> Solver<'a> {
     pub fn new(tvg: &'a mut TypeVarGenerator) -> Self {
         Self {
-            subs: HashMap::new(),
-            kinds: HashMap::new(),
+            substitutions: HashMap::new(),
+            row_tail_vars: HashSet::new(),
             tvg,
         }
     }
 
     pub fn resolve(&self, var: TypeVar) -> Type {
-        self.subs.get(&var).cloned().unwrap_or(Type::Unknown(var))
+        self.substitutions
+            .get(&var)
+            .cloned()
+            .unwrap_or(Type::Unknown(var))
     }
 
     pub fn unify(&mut self, a: Type, b: Type) -> Result<(), TypeError> {
@@ -78,7 +76,7 @@ impl<'a> Solver<'a> {
             )));
         }
 
-        self.subs.insert(tv, ty);
+        self.substitutions.insert(tv, ty);
         Ok(())
     }
 
@@ -202,10 +200,10 @@ impl<'a> Solver<'a> {
                 match row.tail {
                     Some(tail_tv) => {
                         // Create a fresh type variable for the missing field
-                        let new_field_tv = self.fresh_tv(Kind::Type);
+                        let new_field_tv = self.fresh_tv();
 
                         // Create a fresh tail for the extended row fragment
-                        let new_tail_tv = self.fresh_tv(Kind::Row);
+                        let new_tail_tv = self.fresh_row_tail_var();
 
                         // Build the new row fragment that will replace the old tail
                         let mut new_tail_row = Row {
@@ -238,34 +236,13 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn fresh_tv(&mut self, kind: Kind) -> TypeVar {
-        let new_tv = self.tvg.fresh();
-        self.kinds.insert(new_tv, kind);
-        new_tv
-    }
-
-    // fn check_row_has_field_x(&mut self, row_ty: Type, name: String) -> Result<(), TypeError> {
-    //     match self.resolve_type(row_ty) {
-    //         Type::Record(row) | Type::Interface(row) => {
-    //             if row.fields.contains_key(&name) {
-    //                 Ok(())
-    //             } else {
-    //                 Err(TypeError::UnificationFailed(format!(
-    //                     "row missing field {:?}",
-    //                     name
-    //                 )))
-    //             }
-    //         }
-    //         other => Err(TypeError::UnificationFailed(format!(
-    //             "RowHasField on non-row type {:?}",
-    //             other
-    //         ))),
-    //     }
-    // }
-
     pub fn resolve_type(&self, ty: Type) -> Type {
         match ty {
-            Type::Unknown(tv) => self.subs.get(&tv).cloned().unwrap_or(Type::Unknown(tv)),
+            Type::Unknown(tv) => self
+                .substitutions
+                .get(&tv)
+                .cloned()
+                .unwrap_or(Type::Unknown(tv)),
             _ => ty,
         }
     }
@@ -330,7 +307,7 @@ impl<'a> Solver<'a> {
 
             Instr::NewObj { dst, fields } => {
                 // Create a fresh row tail type variable
-                let tail_tv = self.fresh_tv(Kind::Row);
+                let tail_tv = self.fresh_row_tail_var();
 
                 let mut row = Row {
                     fields: BTreeMap::new(),

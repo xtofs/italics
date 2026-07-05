@@ -37,7 +37,8 @@ fn example1(b: &mut IRBuilder) {
 
 fn example2(b: &mut IRBuilder) {
     let r_x = b.reg();
-    let obj = b.new_obj(vec![("x", r_x)]);
+    let r_y = b.reg();
+    let obj = b.new_obj(vec![("x", r_x), ("y", r_y)]);
     let _r_y = b.load(obj, "y"); // field "y" does NOT exist
 }
 
@@ -72,14 +73,19 @@ fn run(name: &str, example_fn: fn(&mut IRBuilder)) {
     } else {
         println!("Solved!");
 
-        for (v, ty) in &solver.subs {
-            println!("    {} ↦ {}", v, ty);
+        println!("    substitutions:");
+        for (v, ty) in &solver.substitutions {
+            println!("        {} ↦ {}", v, ty);
         }
+    }
 
-        println!("Resolved register types:");
-        for reg in builder.register_file.iter() {
-            let ty = solver.resolve_type(Type::Unknown(reg.ty));
-            println!("        {}: {}", reg, ty);
-        }
+    println!("\n    register types:");
+    for reg in builder.register_file.iter() {
+        let ty = solver.resolve_type(Type::Unknown(reg.ty));
+        println!("        {}: {}", reg, ty);
+    }
+    println!("\n    type variable kinds:");
+    for t in solver.row_tail_vars {
+        println!("        {}", t);
     }
 }

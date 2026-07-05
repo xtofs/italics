@@ -1,4 +1,4 @@
-use crate::ids::TypeVarGenerator;
+use crate::vars::TypeVarGenerator;
 use crate::instr::Instr;
 use crate::regs::{Reg, RegGenerator, RegisterFile};
 
