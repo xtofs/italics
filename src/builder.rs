@@ -1,6 +1,6 @@
-use crate::instr::Instr;
-use crate::regs::{Reg, RegGenerator, RegisterFile};
-use crate::vars::TypeVarGenerator;
+use crate::instructions::Instr;
+use crate::registers::{Reg, RegGenerator, RegisterFile};
+use crate::variables::TypeVarGenerator;
 
 #[derive(Debug, Default)]
 pub struct IRBuilder {

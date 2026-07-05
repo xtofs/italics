@@ -96,8 +96,9 @@ fn example_has_field_vs_field_type(b: &mut IRBuilder) -> Vec<Constraint> {
         Constraint::RowFieldType(obj.ty(), "typed_only".to_string(), Type::Int),
         // presence only → field created, type left open
         Constraint::RowHasField(obj.ty(), "present".to_string()),
-        // presence then type → field created and typed (order matters:
-        // RowHasField must run first, exactly as load/store emit them)
+        // presence + type → field created and typed. List order does not
+        // matter: the solver settles all RowHasField (presence) before any
+        // RowFieldType (type link), so `both` is typed `bool` regardless.
         Constraint::RowHasField(obj.ty(), "both".to_string()),
         Constraint::RowFieldType(obj.ty(), "both".to_string(), Type::Bool),
     ]

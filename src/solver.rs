@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::constraints::Constraint;
 use crate::types::{Existential, FuncType, Row, Type};
-use crate::vars::TypeVar;
+use crate::variables::TypeVar;
 use crate::{Instr, TypeVarGenerator};
 
 #[derive(Debug)]
@@ -273,20 +273,57 @@ impl<'a> Solver<'a> {
         }
     }
 
+    /// Solve priority for a constraint. Constraints are processed in ascending
+    /// weight, so the weight encodes the dependencies between constraint kinds
+    /// and the order of constraints *within* the input list no longer matters
+    /// (beyond ties, which a stable sort preserves):
+    ///
+    /// 0. **presence** (`RowHasField`) — create/extend every required field
+    /// 1. **field types** (`RowFieldType`) — link an existing field's type;
+    ///    these never create fields, so all presence must settle first
+    /// 2. **definitional** (`Equal`) — bind object/function variables to their
+    ///    record/function structure
+    /// 3. **relational** (`Subtype` / `StackEqual`) — checks that need every
+    ///    referenced structure already defined
+    fn weight(c: &Constraint) -> u8 {
+        match c {
+            Constraint::RowHasField(..) => 0,
+            Constraint::RowFieldType(..) => 1,
+            Constraint::Equal(..) => 2,
+            Constraint::Subtype(..) | Constraint::StackEqual(..) => 3,
+        }
+    }
+
+    /// Solve constraints by processing them in ascending [`weight`] order (see
+    /// there for the priority tiers). A single **stable** sort of the input by
+    /// weight yields the same result as separate ordered passes while keeping
+    /// each kind's relative order.
+    ///
+    /// This is not a general fixpoint solver: it works because the
+    /// dependencies form a clean linear chain (presence → types → definitions
+    /// → relations). It also relies on `NewObj` rows being open, so the
+    /// provisional records that presence constraints synthesize for
+    /// still-unbound object variables reconcile with the definitional `Equal`s
+    /// by row unification.
     pub fn solve(&mut self, constraints: &[Constraint]) -> Result<(), TypeError> {
-        for c in constraints {
+        let mut ordered: Vec<&Constraint> = constraints.iter().collect();
+        ordered.sort_by_key(|c| Self::weight(c));
+
+        for c in ordered {
             match c {
-                Constraint::Equal(a, b) => self.unify(a.clone(), b.clone())?,
                 Constraint::RowHasField(row_ty, name) => {
                     self.check_row_has_field(row_ty.clone(), name.clone())?;
                 }
                 Constraint::RowFieldType(row_ty, name, field_ty) => {
                     self.check_row_field_type(row_ty.clone(), name.clone(), field_ty.clone())?;
                 }
+                Constraint::Equal(a, b) => self.unify(a.clone(), b.clone())?,
                 Constraint::Subtype(a, b) => {
                     // resolve first so a record/interface referred to by a
                     // variable is recognized (and its row flattened)
-                    match (self.resolve_type(a.clone()), self.resolve_type(b.clone())) {
+                    let a = self.resolve_type(a.clone());
+                    let b = self.resolve_type(b.clone());
+                    match (a, b) {
                         (Type::Record(record_row), Type::Interface(interface_row)) => {
                             self.subtype_record_interface(record_row, interface_row)?
                         }
@@ -641,7 +678,11 @@ mod tests {
 
         let solver = solve_with(
             &mut b,
-            vec![Constraint::RowFieldType(obj.ty(), "y".to_string(), Type::Int)],
+            vec![Constraint::RowFieldType(
+                obj.ty(),
+                "y".to_string(),
+                Type::Int,
+            )],
         )
         .expect("field-type constraint on absent field should be vacuous");
 
@@ -667,7 +708,35 @@ mod tests {
         .expect("presence constraint should extend the open row");
 
         let row = as_record(solver.apply(obj.ty()));
-        assert!(row.fields.contains_key("y"), "RowHasField must create the field");
+        assert!(
+            row.fields.contains_key("y"),
+            "RowHasField must create the field"
+        );
+    }
+
+    #[test]
+    fn field_constraints_are_order_independent() {
+        // RowFieldType listed *before* the RowHasField that creates the field:
+        // staged solving settles all presence first, so `y` is still typed int.
+        let mut b = IRBuilder::default();
+        let r_x = b.reg();
+        let obj = b.new_obj(vec![("x", r_x)]);
+
+        let solver = solve_with(
+            &mut b,
+            vec![
+                Constraint::RowFieldType(obj.ty(), "y".to_string(), Type::Int),
+                Constraint::RowHasField(obj.ty(), "y".to_string()),
+            ],
+        )
+        .expect("should solve regardless of constraint order");
+
+        let row = as_record(solver.apply(obj.ty()));
+        assert_eq!(
+            solver.apply(row.fields["y"].clone()),
+            Type::Int,
+            "field type must be applied even though RowFieldType came first"
+        );
     }
 
     #[test]
@@ -703,6 +772,37 @@ mod tests {
 
         let result = solve_with(&mut b, vec![Constraint::Subtype(obj.ty(), iface)]);
         assert!(matches!(result, Err(TypeError::UnificationFailed(_))));
+    }
+
+    #[test]
+    fn subtype_before_defining_equal_still_solves() {
+        // The `Subtype` is listed *before* the `Equal` that defines the
+        // object's record. Weighted solving runs `Equal` (weight 2) before
+        // `Subtype` (weight 3), so the record is defined by the time the
+        // subtype check runs — the list order does not matter.
+        let mut tvg = TypeVarGenerator::default();
+        let obj_tv = tvg.fresh();
+        let mut solver = Solver::new(&mut tvg);
+
+        let record = Type::Record(Row {
+            fields: BTreeMap::from([("x".to_string(), Type::Int), ("y".to_string(), Type::Int)]),
+            tail: None,
+        });
+        let iface = Type::Interface(Row {
+            fields: BTreeMap::from([("x".to_string(), Type::Int)]),
+            tail: None,
+        });
+
+        let constraints = vec![
+            // relational check listed first...
+            Constraint::Subtype(Type::Unknown(obj_tv), iface),
+            // ...but its definition comes later in the list
+            Constraint::Equal(Type::Unknown(obj_tv), record),
+        ];
+
+        solver
+            .solve(&constraints)
+            .expect("Equal must run before Subtype regardless of list order");
     }
 
     #[test]

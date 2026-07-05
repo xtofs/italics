@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Write;
 
-use crate::vars::TypeVar;
+use crate::variables::TypeVar;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FuncType {

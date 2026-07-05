@@ -1,7 +1,7 @@
 use core::fmt;
 // use std::fmt::write;
 
-use crate::regs::Reg;
+use crate::registers::Reg;
 
 #[derive(Debug, Clone)]
 pub enum Instr {

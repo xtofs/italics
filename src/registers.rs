@@ -1,7 +1,7 @@
 use core::fmt;
 
 use crate::types::Type;
-use crate::vars::TypeVar;
+use crate::variables::TypeVar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RegId(pub u32);
@@ -43,15 +43,15 @@ impl RegGenerator {
 
 #[derive(Debug, Default)]
 pub struct RegisterFile {
-    regs: Vec<Reg>,
+    registers: Vec<Reg>,
 }
 
 impl RegisterFile {
     pub fn add(&mut self, reg: Reg) {
-        self.regs.push(reg);
+        self.registers.push(reg);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Reg> + '_ {
-        self.regs.iter().copied()
+        self.registers.iter().copied()
     }
 }

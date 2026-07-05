@@ -6,18 +6,22 @@ use crate::types::Type;
 pub enum Constraint {
     /// Two types must unify.
     Equal(Type, Type),
+
     /// The row type must **have** the named field (presence only). The field's
     /// type is left unconstrained; on an open row a missing field is added by
     /// row-tail extension, on a closed row a missing field is an error.
     /// Printed `f ∈ r`.
     RowHasField(Type, String),
+
     /// The type of the named field must unify with the given type. This does
     /// **not** require the field to exist — establishing presence is the job
     /// of `RowHasField`, with which this constraint is paired for field
     /// access. Printed `f: t ∈ r`.
     RowFieldType(Type, String, Type),
+
     /// Structural inclusion: a `Record` must satisfy an `Interface`.
     Subtype(Type, Type),
+
     /// Two stack shapes must unify element-wise.
     StackEqual(Vec<Type>, Vec<Type>),
 }

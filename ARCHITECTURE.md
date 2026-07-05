@@ -95,7 +95,6 @@
   Holds:
   - `substitutions: HashMap<TypeVar, Type>` — substitution map from type variables to types.
   - `tvg: &mut TypeVarGenerator` — the same generator the IRBuilder uses, so solver-created variables never collide.
-  - `row_tail_vars: HashSet<TypeVar>` — every row-tail variable the solver created.
 
 - **Row-kind variables**  
   Kinds are encoded in the `TypeVar` itself (`vars.rs`): `fresh_row()` sets a tag bit, `TypeVar::is_row()` tests it. `bind_var` kind-checks every binding: a row variable may only be bound to a row fragment (a `Record`) or another row variable (`TypeError::KindMismatch` otherwise).
@@ -107,8 +106,9 @@
   - `apply(ty)` — deep substitution for reporting final inferred types
   - `unify(a, b)` — full unification: vars (with occurs check), `Ptr`, `Func`, `Record`/`Interface` rows, `Stack`
   - `unify_row(r1, r2)` — Rémy-style open-row unification: shared fields unify pointwise, exclusive fields are absorbed into the other side's tail, both-open rows share a fresh common tail
-  - `solve(constraints)` — iterate constraints and apply unification / specialized handling
-  - `lookup_or_extend_field(ty, name)` — backs `RowHasField`/`RowFieldType`: returns the field's type, extending an open row via its tail when the field is missing (row-tail extension)
+  - `solve(constraints)` — processes constraints in ascending `weight` order via a single **stable** sort, rather than in list order. The weight tiers encode the dependency chain, so the order of constraints within the input list does not matter (a stable sort preserves ties): `RowHasField` (0, presence) → `RowFieldType` (1, field types) → `Equal` (2, definitional record/function structure) → `Subtype`/`StackEqual` (3, relational checks that need everything already defined). It is not a general fixpoint solver — it works because the dependencies form a linear chain, and it relies on `NewObj` rows being open so the provisional records that presence constraints synthesize reconcile with the definitional `Equal`s.
+  - `lookup_or_extend_field(ty, name)` — backs `RowHasField`: returns the field's type, extending an open row via its tail when the field is missing (row-tail extension)
+  - `lookup_field(ty, name)` — read-only lookup backing `RowFieldType`: returns the field's type if present, else `None` (never extends or errors)
 
 Not yet implemented: existential unification, `Subtype` beyond `Record <: Interface`.
 
