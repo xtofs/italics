@@ -1,8 +1,8 @@
-use crate::vars::TypeVarGenerator;
 use crate::instr::Instr;
 use crate::regs::{Reg, RegGenerator, RegisterFile};
+use crate::vars::TypeVarGenerator;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct IRBuilder {
     pub body: Vec<Instr>,
     pub register_file: RegisterFile,
@@ -11,14 +11,14 @@ pub struct IRBuilder {
 }
 
 impl IRBuilder {
-    pub fn new() -> Self {
-        Self {
-            type_variable_generator: TypeVarGenerator::new(),
-            register_generator: RegGenerator::new(),
-            register_file: RegisterFile::new(),
-            body: Vec::new(),
-        }
-    }
+    // pub fn new() -> Self {
+    //     Self {
+    //         type_variable_generator: TypeVarGenerator::default(),
+    //         register_generator: RegGenerator::default(),
+    //         register_file: RegisterFile::default(),
+    //         body: Vec::new(),
+    //     }
+    // }
 
     pub fn reg(&mut self) -> Reg {
         let tv = self.type_variable_generator.fresh();

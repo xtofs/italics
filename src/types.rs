@@ -36,7 +36,7 @@ impl fmt::Display for Row {
             if !self.fields.is_empty() {
                 write!(f, " | ")?;
             }
-            write!(f, "ρ{}", Subscript(tail.0))?; // σ
+            write!(f, "{}", tail)?;
         }
         write!(f, " }}")
     }
@@ -82,7 +82,8 @@ impl fmt::Display for Type {
 
 impl fmt::Display for TypeVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "τ{}", Subscript(self.0))
+        let letter = if self.is_row() { 'ρ' } else { 'τ' };
+        write!(f, "{}{}", letter, Subscript(self.index()))
     }
 }
 
@@ -91,19 +92,26 @@ struct Subscript(u32);
 impl fmt::Display for Subscript {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut n = self.0;
-        let mut pow = 1;
 
-        while pow * 10 <= n {
-            pow *= 10;
+        // Special case for zero
+        if n == 0 {
+            return fmt.write_char('\u{2080}');
         }
 
-        while pow > 0 {
-            let digit = n / pow;
-            let ch = char::from_u32(0x2080 + digit).expect("digit should be in 0..=9");
-            fmt.write_char(ch)?;
+        // Maximum digits for u32 is 10 (4_294_967_295)
+        let mut buf = [0u8; 10];
 
-            n %= pow;
-            pow /= 10;
+        // Extract digits backwards
+        let mut i = buf.len();
+        while n != 0 {
+            i -= 1;
+            buf[i] = (n % 10) as u8;
+            n /= 10;
+        }
+
+        for &digit in &buf[i..] {
+            let ch = char::from_u32(0x2080 + (digit as u32)).expect("digit should be in 0..=9");
+            fmt.write_char(ch)?;
         }
 
         Ok(())

@@ -1,7 +1,7 @@
 use core::fmt;
 
-use crate::vars::TypeVar;
 use crate::types::Type;
+use crate::vars::TypeVar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RegId(pub u32);
@@ -24,15 +24,15 @@ impl fmt::Display for Reg {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RegGenerator {
     next: u32,
 }
 
 impl RegGenerator {
-    pub fn new() -> Self {
-        Self { next: 0 }
-    }
+    // pub fn new() -> Self {
+    //     Self { next: 0 }
+    // }
 
     pub fn fresh(&mut self, tv: TypeVar) -> Reg {
         let id = RegId(self.next);
@@ -41,16 +41,12 @@ impl RegGenerator {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RegisterFile {
     regs: Vec<Reg>,
 }
 
 impl RegisterFile {
-    pub fn new() -> Self {
-        Self { regs: Vec::new() }
-    }
-
     pub fn add(&mut self, reg: Reg) {
         self.regs.push(reg);
     }

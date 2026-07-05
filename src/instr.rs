@@ -43,7 +43,7 @@ impl fmt::Display for Instr {
                     }
                     write!(f, "{}: {}", item.0, item.1)?;
                 }
-                write!(f, "}}")?;
+                write!(f, " }}")?;
                 Ok(())
             }
             Instr::Call { func, args, ret } => {

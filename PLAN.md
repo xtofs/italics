@@ -54,14 +54,61 @@ Solver must use the same `TypeVarGenerator` as IRBuilder.
 
 ---
 
-## 3. Required Changes
+## 3. Required Changes (implemented)
 
-### 3.1 Add `fresh_tv(kind)` to Solver
+### 3.1 Fresh-variable helpers on Solver
+
+Kinds are carried by a tag bit on `TypeVar` itself (`vars.rs`: `fresh_row()`
+sets bit 31, `TypeVar::is_row()`), replacing the earlier `kinds:
+HashMap<TypeVar, Kind>` design.
 
 ```rust
-fn fresh_tv(&mut self, kind: Kind) -> TypeVar {
-    let tv = self.tvg.fresh();
-    self.kinds.insert(tv, kind);
+fn fresh_tv(&mut self) -> TypeVar {
+    self.tvg.fresh()
+}
+
+fn fresh_row_tail_var(&mut self) -> TypeVar {
+    let tv = self.tvg.fresh_row();
+    self.row_tail_vars.insert(tv);
     tv
 }
 ```
+
+### 3.2 Row flattening (`resolve_row`)
+
+Row-tail extension binds a tail variable to a row *fragment*
+(`Record { new fields | fresh tail }`). `resolve_row` follows that chain and
+merges the fields, so every consumer (unification, field constraints,
+reporting) sees the full accumulated row. `resolve_type` chases variable
+substitutions and flattens row types.
+
+### 3.3 Field lookup with extension (`lookup_or_extend_field`)
+
+`RowHasField` and `RowFieldType` share one helper:
+
+- field present → return its type
+- field missing, row open → bind the tail to a fragment holding the field
+  (fresh type var) plus a fresh tail; return the fresh field type
+- field missing, row closed → type error
+- type still an unbound variable → bind it to a fresh open record containing
+  just the field (makes constraint order less brittle)
+
+### 3.4 Open-row unification (`unify_row`)
+
+Rémy-style: shared fields unify pointwise; fields exclusive to one side are
+absorbed into the other side's tail. Both-open rows share a fresh common
+tail; a closed row missing fields is a type error; identical tails cannot
+absorb differing fields.
+
+### 3.5 Kind checking (`bind_var` / `check_kind`)
+
+A row variable may only be bound to a row fragment or another row variable;
+a type variable may never be bound to a row variable
+(`TypeError::KindMismatch`).
+
+### 3.6 End-to-end tests
+
+`src/solver.rs` has a test module driving the full pipeline (IRBuilder →
+`generate_constraints` → `solve`), including the headline row-tail-extension
+case: `new_obj {x}` followed by `load obj.y` solves, and the object's type
+becomes `record { x, y | ρ }`.

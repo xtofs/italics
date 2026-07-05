@@ -5,25 +5,30 @@ impl TypeVar {
     pub fn is_row(&self) -> bool {
         self.0 & 0x8000_0000 != 0
     }
+
+    /// The variable's index within its kind (tag bit masked off).
+    pub fn index(&self) -> u32 {
+        self.0 & !0x8000_0000
+    }
 }
 
 // IR Builder → generates TypeVars
 // Constraint Generator → uses TypeVars
 // Solver → binds TypeVars
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TypeVarGenerator {
     next: u32,
     next_row: u32,
 }
 
 impl TypeVarGenerator {
-    pub fn new() -> Self {
-        Self {
-            next: 0,
-            next_row: 0,
-        }
-    }
+    // pub fn new() -> Self {
+    //     Self {
+    //         next: 0,
+    //         next_row: 0,
+    //     }
+    // }
 
     pub fn fresh(&mut self) -> TypeVar {
         let v = TypeVar(self.next);
