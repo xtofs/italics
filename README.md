@@ -15,7 +15,6 @@ From repository root:
 
 ```bash
 cargo test
-cargo run --example main
 cargo run --example codegen
 cargo run --example pipeline
 cargo run --example irbuilder

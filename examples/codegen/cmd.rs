@@ -9,7 +9,7 @@ where
 {
     let mut cmd = Command::new(program);
     cmd.args(args);
-    println!("running {:?}", &cmd);
+    println!("running {:?}", cmd.as_shell_string());
     let output = cmd.output()?;
 
     if !output.stdout.is_empty() {
@@ -27,4 +27,21 @@ macro_rules! run_cmd {
         let args: Vec<std::ffi::OsString> = vec![$(std::ffi::OsString::from($arg)),*];
         crate::cmd::run_cmd($prog, args)
     }};
+}
+trait CommandExt {
+    fn as_shell_string(&self) -> String;
+}
+
+impl CommandExt for std::process::Command {
+    fn as_shell_string(&self) -> String {
+        let program = self.get_program().to_string_lossy();
+        let args = self
+            .get_args()
+            .map(|a| a.to_string_lossy())
+            .collect::<Vec<_>>();
+        std::iter::once(program)
+            .chain(args)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }

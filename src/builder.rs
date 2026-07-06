@@ -4,12 +4,96 @@ use crate::registers::{Reg, RegGenerator, RegisterFile};
 use crate::types::{FuncType, Type};
 use crate::variables::TypeVarGenerator;
 
+#[derive(Debug)]
+pub struct FunctionBuilder<const N: usize> {
+    name: String,
+    params: [Type; N],
+    ret: Type,
+    param_regs: [Reg; N],
+    ir: IRBuilder,
+}
+
+impl<const N: usize> FunctionBuilder<N> {
+    pub fn new(name: impl Into<String>, params: [Type; N], ret: Type) -> Self {
+        let mut ir = IRBuilder::default();
+        let param_regs = std::array::from_fn(|index| ir.param(index));
+
+        Self {
+            name: name.into(),
+            params,
+            ret,
+            param_regs,
+            ir,
+        }
+    }
+
+    /// Return the pre-declared parameter register at `index`.
+    pub fn param(&self, index: usize) -> Reg {
+        *self.param_regs.get(index).unwrap_or_else(|| {
+            panic!(
+                "FunctionBuilder::param index {} out of bounds for {} parameters",
+                index, N
+            )
+        })
+    }
+
+    pub fn params(&self) -> [Reg; N] {
+        self.param_regs
+    }
+
+    pub fn reg(&mut self) -> Reg {
+        self.ir.reg()
+    }
+
+    pub fn new_obj(&mut self, fields: Vec<(impl Into<String>, Reg)>) -> Reg {
+        self.ir.new_obj(fields)
+    }
+
+    pub fn load(&mut self, src: Reg, field: impl Into<String>) -> Reg {
+        self.ir.load(src, field)
+    }
+
+    pub fn store(&mut self, dst: Reg, field: impl Into<String>, src: Reg) {
+        self.ir.store(dst, field, src);
+    }
+
+    pub fn call(&mut self, func: Reg, args: Vec<Reg>) -> Reg {
+        self.ir.call(func, args)
+    }
+
+    pub fn const_int(&mut self, v: i64) -> Reg {
+        self.ir.const_int(v)
+    }
+
+    pub fn const_bool(&mut self, v: bool) -> Reg {
+        self.ir.const_bool(v)
+    }
+
+    pub fn binop(&mut self, op: BinOpKind, lhs: Reg, rhs: Reg) -> Reg {
+        self.ir.binop(op, lhs, rhs)
+    }
+
+    pub fn func(&mut self, name: impl Into<String>, params: Vec<Type>, ret: Type) -> Reg {
+        self.ir.func(name, params, ret)
+    }
+
+    pub fn ret(&mut self, src: Reg) {
+        self.ir.ret(src);
+    }
+
+    pub fn build(self) -> IRFunction {
+        self.ir
+            .finish(self.name, self.params.into_iter().collect(), self.ret)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct IRBuilder {
     pub body: Vec<Instr>,
     pub register_file: RegisterFile,
     pub type_variable_generator: TypeVarGenerator,
     pub register_generator: RegGenerator,
+    pub max_param_index: Option<usize>,
 }
 
 impl IRBuilder {
@@ -32,6 +116,10 @@ impl IRBuilder {
     /// Return the parameter register at `index`, reserving parameter registers
     /// from `reg0` upward as needed.
     pub fn param(&mut self, index: usize) -> Reg {
+        self.max_param_index = Some(
+            self.max_param_index
+                .map_or(index, |current| current.max(index)),
+        );
         while self.register_file.len() <= index {
             let _ = self.reg();
         }
@@ -122,6 +210,15 @@ impl IRBuilder {
     /// Finalize this builder into a named IR function with an explicit
     /// signature. This is the first step toward intra-IR function definitions.
     pub fn finish(mut self, name: impl Into<String>, params: Vec<Type>, ret: Type) -> IRFunction {
+        if let Some(max_param_index) = self.max_param_index {
+            assert!(
+                params.len() > max_param_index,
+                "IRBuilder::finish declared {} params, but highest referenced parameter index is {}",
+                params.len(),
+                max_param_index
+            );
+        }
+
         // Reserve predictable parameter registers [reg0..regN) even when the
         // caller did not request them explicitly during IR construction.
         while self.register_file.len() < params.len() {
@@ -155,5 +252,41 @@ mod tests {
         assert!(regs.len() >= 2);
         assert_eq!(regs[0].id.0, 0);
         assert_eq!(regs[1].id.0, 1);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "IRBuilder::finish declared 1 params, but highest referenced parameter index is 1"
+    )]
+    fn finish_panics_when_referenced_param_exceeds_signature() {
+        let mut b = IRBuilder::default();
+        let _ = b.param(1);
+
+        let _ = b.finish("f", vec![Type::Int], Type::Int);
+    }
+
+    #[test]
+    fn function_builder_param_access_matches_declared_signature() {
+        let b = FunctionBuilder::new("f", [Type::Int, Type::Bool], Type::Int);
+
+        assert_eq!(b.param(0).id.0, 0);
+        assert_eq!(b.param(1).id.0, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "FunctionBuilder::param index 2 out of bounds for 2 parameters")]
+    fn function_builder_panics_on_out_of_bounds_param() {
+        let b = FunctionBuilder::new("f", [Type::Int, Type::Bool], Type::Int);
+
+        let _ = b.param(2);
+    }
+
+    #[test]
+    fn function_builder_params_array_has_compile_time_arity() {
+        let b = FunctionBuilder::new("f", [Type::Int, Type::Bool], Type::Int);
+        let [p0, p1] = b.params();
+
+        assert_eq!(p0.id.0, 0);
+        assert_eq!(p1.id.0, 1);
     }
 }

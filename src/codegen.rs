@@ -688,7 +688,8 @@ pub fn emit_c_program(program: &IRProgram) -> Result<String, ProgramCodegenError
     let mut symbol_map: HashMap<String, String> = HashMap::new();
     let mut used_symbols = HashSet::new();
     for function in &program.functions {
-        let base = format!("ir_{}", sanitize_ident(&function.name));
+        // let base = format!("ir_{}", sanitize_ident(&function.name));
+        let base = format!("{}", sanitize_ident(&function.name));
         let mut candidate = base.clone();
         let mut suffix = 1_u32;
         while used_symbols.contains(&candidate) {
@@ -1045,7 +1046,11 @@ mod tests {
         let c = emit_c_program(&program).expect("program should emit");
 
         assert!(c.contains("static int64_t ir_helper(int64_t);"), "{}", c);
-        assert!(c.contains("static int64_t ir_helper(int64_t reg0)"), "{}", c);
+        assert!(
+            c.contains("static int64_t ir_helper(int64_t reg0)"),
+            "{}",
+            c
+        );
         assert!(c.contains("fn_main_0 reg1 = ir_helper;"), "{}", c);
         assert!(c.contains("int64_t reg2 = reg1(reg0);"), "{}", c);
     }
@@ -1131,6 +1136,8 @@ mod tests {
         let status = Command::new("cc")
             .arg(&src)
             .arg("-o")
+            .arg("-O1")
+            .arg("-v")
             .arg(&bin)
             .status()
             .unwrap();

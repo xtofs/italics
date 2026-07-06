@@ -9,7 +9,7 @@ pub mod solver;
 pub mod types;
 pub mod variables;
 
-pub use builder::IRBuilder;
+pub use builder::{FunctionBuilder, IRBuilder};
 pub use codegen::{CodegenError, ProgramCodegenError, emit_c, emit_c_program};
 pub use constraints::Constraint;
 pub use instructions::Instr;
