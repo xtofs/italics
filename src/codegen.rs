@@ -1,0 +1,678 @@
+use std::collections::HashMap;
+use std::fmt;
+use std::fmt::Write as _;
+
+use crate::instructions::Instr;
+use crate::registers::{RegId, RegisterFile};
+use crate::solver::Solver;
+use crate::types::Type;
+
+/// Runtime functions the emitted prelude defines itself. A `LoadFunc` naming
+/// one of these needs no `extern` prototype.
+const PRELUDE_FUNCS: &[&str] = &["print_int", "print_bool"];
+
+#[derive(Debug)]
+pub enum CodegenError {
+    /// A register's type never got resolved by inference — emitting C would
+    /// mean silently defaulting it, which would hide the inference gap.
+    UnresolvedType(String),
+    /// A register has a type the C backend does not lower (interface,
+    /// existential, stack, …).
+    Unsupported(String),
+}
+
+impl fmt::Display for CodegenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CodegenError::UnresolvedType(s) => write!(f, "unresolved type: {}", s),
+            CodegenError::Unsupported(s) => write!(f, "unsupported type: {}", s),
+        }
+    }
+}
+
+impl std::error::Error for CodegenError {}
+
+/// A structurally-deduplicated record layout, emitted as `struct R<id>`.
+struct StructDef {
+    id: usize,
+    fields: Vec<(String, String)>, // (field name, C type)
+    /// The open row tail that was closed at codegen time, if any — recorded
+    /// so the emitted struct can note where its width was frozen.
+    closed_from: Option<String>,
+}
+
+/// A deduplicated function-pointer signature, emitted as `typedef … fn<id>`.
+struct FnDef {
+    id: usize,
+    params: Vec<String>,
+    ret: String,
+}
+
+struct CodeGen<'a, 'b> {
+    solver: &'a Solver<'b>,
+    structs: Vec<StructDef>,
+    struct_index: HashMap<Vec<(String, String)>, usize>,
+    fns: Vec<FnDef>,
+    fn_index: HashMap<(Vec<String>, String), usize>,
+    reg_ctype: HashMap<RegId, String>,
+}
+
+impl<'a, 'b> CodeGen<'a, 'b> {
+    fn new(solver: &'a Solver<'b>) -> Self {
+        Self {
+            solver,
+            structs: Vec::new(),
+            struct_index: HashMap::new(),
+            fns: Vec::new(),
+            fn_index: HashMap::new(),
+            reg_ctype: HashMap::new(),
+        }
+    }
+
+    /// Lower an inferred `Type` to a C type string, interning any records and
+    /// function-pointer signatures it encounters. Fields are lowered
+    /// depth-first, so nested structs/typedefs are interned before their
+    /// containers.
+    fn lower(&mut self, ty: &Type) -> Result<String, CodegenError> {
+        match ty {
+            Type::Int => Ok("int64_t".to_string()),
+            Type::Bool => Ok("bool".to_string()),
+            Type::Ptr(inner) => Ok(format!("{}*", self.lower(inner)?)),
+            Type::Record(row) => {
+                let mut fields = Vec::with_capacity(row.fields.len());
+                for (name, fty) in &row.fields {
+                    fields.push((name.clone(), self.lower(fty)?));
+                }
+                let closed_from = row.tail.map(|tv| format!("{}", tv));
+                let id = self.intern_struct(fields, closed_from);
+                Ok(format!("struct R{} *", id))
+            }
+            Type::Func(ft) => {
+                let mut params = Vec::with_capacity(ft.params.len());
+                for p in &ft.params {
+                    params.push(self.lower(p)?);
+                }
+                let ret = self.lower(&ft.ret)?;
+                let id = self.intern_fn(params, ret);
+                Ok(format!("fn{}", id))
+            }
+            Type::Unknown(tv) => Err(CodegenError::UnresolvedType(format!("{}", tv))),
+            Type::Interface(_) => Err(CodegenError::Unsupported("interface".to_string())),
+            Type::Existential(_) => Err(CodegenError::Unsupported("existential".to_string())),
+            Type::Stack(_) => Err(CodegenError::Unsupported("stack".to_string())),
+        }
+    }
+
+    /// get or add the described struct to the struct index
+    fn intern_struct(
+        &mut self,
+        fields: Vec<(String, String)>,
+        closed_from: Option<String>,
+    ) -> usize {
+        if let Some(&id) = self.struct_index.get(&fields) {
+            return id;
+        }
+        let id = self.structs.len();
+        self.struct_index.insert(fields.clone(), id);
+        self.structs.push(StructDef {
+            id,
+            fields,
+            closed_from,
+        });
+        id
+    }
+
+    /// get or add the described function to the function index
+    fn intern_fn(&mut self, params: Vec<String>, ret: String) -> usize {
+        let key = (params.clone(), ret.clone());
+        if let Some(&id) = self.fn_index.get(&key) {
+            return id;
+        }
+        let id = self.fns.len();
+        self.fn_index.insert(key, id);
+        self.fns.push(FnDef { id, params, ret });
+        id
+    }
+
+    /// Pass 1: ground and lower every register's type, populating the
+    /// interning tables and the per-register C type map.
+    fn ground_registers(&mut self, registers: &RegisterFile) -> Result<(), CodegenError> {
+        for reg in registers.iter() {
+            let ty = self.solver.apply(reg.ty());
+            let ctype = match self.lower(&ty) {
+                Ok(c) => c,
+                Err(CodegenError::UnresolvedType(v)) => {
+                    return Err(CodegenError::UnresolvedType(format!(
+                        "{} has unresolved type {}",
+                        reg, v
+                    )));
+                }
+                Err(e) => return Err(e),
+            };
+            self.reg_ctype.insert(reg.id, ctype);
+        }
+        Ok(())
+    }
+
+    fn ctype(&self, id: RegId) -> &str {
+        &self.reg_ctype[&id]
+    }
+
+    /// Pass 3: emit the full C translation unit.
+    fn emit(&self, body: &[Instr]) -> Result<String, CodegenError> {
+        let mut out = String::new();
+
+        out.push_str("#include <stdint.h>\n");
+        out.push_str("#include <stdbool.h>\n");
+        out.push_str("#include <stdio.h>\n");
+        out.push_str("#include <stdlib.h>\n\n");
+
+        // Forward-declare every struct tag so typedefs and struct fields can
+        // refer to any struct regardless of emission order.
+        if !self.structs.is_empty() {
+            for s in &self.structs {
+                writeln!(out, "struct R{};", s.id).unwrap();
+            }
+            out.push('\n');
+        }
+
+        // Function-pointer typedefs (before struct defs, which may use them).
+        for fd in &self.fns {
+            writeln!(
+                out,
+                "typedef {} (*fn{})({});",
+                fd.ret,
+                fd.id,
+                if fd.params.is_empty() {
+                    "void".to_string()
+                } else {
+                    fd.params.join(", ")
+                }
+            )
+            .unwrap();
+        }
+        if !self.fns.is_empty() {
+            out.push('\n');
+        }
+
+        // Struct definitions.
+        for s in &self.structs {
+            writeln!(out, "struct R{} {{", s.id).unwrap();
+            for (name, cty) in &s.fields {
+                writeln!(out, "    {} {};", cty, name).unwrap();
+            }
+            if let Some(tail) = &s.closed_from {
+                writeln!(out, "    /* row closed from {} at codegen */", tail).unwrap();
+            }
+            out.push_str("};\n\n");
+        }
+
+        // Prelude runtime functions (return their argument — the type algebra
+        // has no unit type). Emit only the ones the program actually loads, so
+        // the translation unit stays warning-clean under -Wall.
+        let loaded = loaded_func_names(body);
+        let mut emitted_prelude = false;
+        if loaded.contains("print_int") {
+            out.push_str(
+                "static int64_t print_int(int64_t x) { printf(\"%lld\\n\", (long long)x); return x; }\n",
+            );
+            emitted_prelude = true;
+        }
+        if loaded.contains("print_bool") {
+            out.push_str(
+                "static bool print_bool(bool x) { printf(\"%s\\n\", x ? \"true\" : \"false\"); return x; }\n",
+            );
+            emitted_prelude = true;
+        }
+        if emitted_prelude {
+            out.push('\n');
+        }
+
+        // Extern prototypes for LoadFunc names not defined by the prelude.
+        self.emit_externs(body, &mut out)?;
+
+        // Registers referenced as operands somewhere — a defined register that
+        // is never an operand is dead and must not be declared (it would warn
+        // under -Wall).
+        let used = used_registers(body);
+
+        out.push_str("int main(void) {\n");
+        let mut saw_ret = false;
+        for instr in body {
+            self.emit_instr(instr, &mut out, &used, &mut saw_ret)?;
+        }
+        if !saw_ret {
+            out.push_str("    return 0;\n");
+        }
+        out.push_str("}\n");
+
+        Ok(out)
+    }
+
+    fn emit_externs(&self, body: &[Instr], out: &mut String) -> Result<(), CodegenError> {
+        let mut seen: Vec<&str> = Vec::new();
+        for instr in body {
+            if let Instr::LoadFunc { name, sig, .. } = instr {
+                if PRELUDE_FUNCS.contains(&name.as_str()) || seen.contains(&name.as_str()) {
+                    continue;
+                }
+                seen.push(name);
+                let mut params = Vec::with_capacity(sig.params.len());
+                for p in &sig.params {
+                    // lowering here only reads the (already populated) tables
+                    params.push(self.lower_readonly(p)?);
+                }
+                let ret = self.lower_readonly(&sig.ret)?;
+                let params = if params.is_empty() {
+                    "void".to_string()
+                } else {
+                    params.join(", ")
+                };
+                writeln!(out, "extern {} {}({});", ret, name, params).unwrap();
+            }
+        }
+        if !seen.is_empty() {
+            out.push('\n');
+        }
+        Ok(())
+    }
+
+    /// Lower a type against the already-populated interning tables, without
+    /// mutating them. Every type reachable from a register signature was
+    /// already interned during `ground_registers`, so a miss is a bug.
+    fn lower_readonly(&self, ty: &Type) -> Result<String, CodegenError> {
+        match ty {
+            Type::Int => Ok("int64_t".to_string()),
+            Type::Bool => Ok("bool".to_string()),
+            Type::Ptr(inner) => Ok(format!("{}*", self.lower_readonly(inner)?)),
+            Type::Record(row) => {
+                let mut fields = Vec::with_capacity(row.fields.len());
+                for (name, fty) in &row.fields {
+                    fields.push((name.clone(), self.lower_readonly(fty)?));
+                }
+                match self.struct_index.get(&fields) {
+                    Some(id) => Ok(format!("struct R{} *", id)),
+                    None => Err(CodegenError::Unsupported(format!(
+                        "record shape {:?} was not interned",
+                        fields
+                    ))),
+                }
+            }
+            Type::Func(ft) => {
+                let mut params = Vec::with_capacity(ft.params.len());
+                for p in &ft.params {
+                    params.push(self.lower_readonly(p)?);
+                }
+                let ret = self.lower_readonly(&ft.ret)?;
+                match self.fn_index.get(&(params.clone(), ret.clone())) {
+                    Some(id) => Ok(format!("fn{}", id)),
+                    None => Err(CodegenError::Unsupported(
+                        "function signature was not interned".to_string(),
+                    )),
+                }
+            }
+            Type::Unknown(tv) => Err(CodegenError::UnresolvedType(format!("{}", tv))),
+            Type::Interface(_) => Err(CodegenError::Unsupported("interface".to_string())),
+            Type::Existential(_) => Err(CodegenError::Unsupported("existential".to_string())),
+            Type::Stack(_) => Err(CodegenError::Unsupported("stack".to_string())),
+        }
+    }
+
+    fn emit_instr(
+        &self,
+        instr: &Instr,
+        out: &mut String,
+        used: &std::collections::HashSet<RegId>,
+        saw_ret: &mut bool,
+    ) -> Result<(), CodegenError> {
+        if let Some(dst) = instr.dst() {
+            let _ = writeln!(
+                out,
+                "    // {} // {}: {}",
+                instr,
+                dst,
+                self.solver.apply(dst.ty())
+            );
+        } else {
+            let _ = writeln!(out, "    // {}", instr);
+        }
+        match instr {
+            Instr::Const { dst, value } => {
+                let lit = match value {
+                    crate::instructions::Value::Int(v) => v.to_string(),
+                    crate::instructions::Value::Bool(v) => v.to_string(),
+                };
+                writeln!(out, "    {} {} = {};", self.ctype(dst.id), dst, lit).unwrap();
+            }
+            Instr::NewObj { dst, fields } => {
+                writeln!(
+                    out,
+                    "    {} {} = calloc(1, sizeof *{});",
+                    self.ctype(dst.id),
+                    dst,
+                    dst
+                )
+                .unwrap();
+                for (name, reg) in fields {
+                    writeln!(out, "    {}->{} = {};", dst, name, reg).unwrap();
+                }
+            }
+            Instr::Load { dst, src, field } => {
+                writeln!(
+                    out,
+                    "    {} {} = {}->{};",
+                    self.ctype(dst.id),
+                    dst,
+                    src,
+                    field
+                )
+                .unwrap();
+            }
+            Instr::Store { dst, field, src } => {
+                writeln!(out, "    {}->{} = {};", dst, field, src).unwrap();
+            }
+            Instr::BinOp { dst, op, lhs, rhs } => {
+                writeln!(
+                    out,
+                    "    {} {} = {} {} {};",
+                    self.ctype(dst.id),
+                    dst,
+                    lhs,
+                    op.symbol(),
+                    rhs
+                )
+                .unwrap();
+            }
+            Instr::LoadFunc { dst, name, .. } => {
+                writeln!(out, "    {} {} = {};", self.ctype(dst.id), dst, name).unwrap();
+            }
+            Instr::Call { func, args, ret } => {
+                let args: Vec<String> = args.iter().map(|r| format!("{}", r)).collect();
+                if used.contains(&ret.id) {
+                    writeln!(
+                        out,
+                        "    {} {} = {}({});",
+                        self.ctype(ret.id),
+                        ret,
+                        func,
+                        args.join(", ")
+                    )
+                    .unwrap();
+                } else {
+                    // result discarded — emit the call for its side effect only
+                    writeln!(out, "    {}({});", func, args.join(", ")).unwrap();
+                }
+            }
+            Instr::Ret { src } => {
+                writeln!(out, "    printf(\"result: %lld\\n\", (long long){});", src).unwrap();
+                writeln!(out, "    return (int){};", src).unwrap();
+                *saw_ret = true;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Emit a runnable C translation unit for `body`, taking every register's
+/// concrete type from `solver`. Records lower to heap-allocated structs behind
+/// pointers; unresolved register types are an error rather than a silent
+/// default.
+pub fn emit_c(
+    body: &[Instr],
+    registers: &RegisterFile,
+    solver: &Solver,
+) -> Result<String, CodegenError> {
+    let mut cg = CodeGen::new(solver);
+    cg.ground_registers(registers)?;
+    cg.emit(body)
+}
+
+/// Registers that appear as an *operand* of some instruction. A register that
+/// is only ever a destination is dead; declaring it would warn under -Wall.
+fn used_registers(body: &[Instr]) -> std::collections::HashSet<RegId> {
+    let mut used = std::collections::HashSet::new();
+    for instr in body {
+        match instr {
+            Instr::Load { src, .. } => {
+                used.insert(src.id);
+            }
+            Instr::Store { dst, src, .. } => {
+                used.insert(dst.id);
+                used.insert(src.id);
+            }
+            Instr::NewObj { fields, .. } => {
+                for (_, reg) in fields {
+                    used.insert(reg.id);
+                }
+            }
+            Instr::Call { func, args, .. } => {
+                used.insert(func.id);
+                for a in args {
+                    used.insert(a.id);
+                }
+            }
+            Instr::BinOp { lhs, rhs, .. } => {
+                used.insert(lhs.id);
+                used.insert(rhs.id);
+            }
+            Instr::Ret { src } => {
+                used.insert(src.id);
+            }
+            Instr::Const { .. } | Instr::LoadFunc { .. } => {}
+        }
+    }
+    used
+}
+
+/// Names of runtime functions the program loads via `LoadFunc`.
+fn loaded_func_names(body: &[Instr]) -> std::collections::HashSet<String> {
+    body.iter()
+        .filter_map(|instr| match instr {
+            Instr::LoadFunc { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constraints::Constraint;
+    use crate::instructions::BinOpKind;
+    use crate::types::{Row, Type};
+    use crate::{IRBuilder, Solver};
+    use std::collections::BTreeMap;
+
+    /// Solve the builder's body and emit C, mirroring the real pipeline.
+    fn emit(builder: &mut IRBuilder) -> Result<String, CodegenError> {
+        emit_with(builder, Vec::new())
+    }
+
+    fn emit_with(builder: &mut IRBuilder, extra: Vec<Constraint>) -> Result<String, CodegenError> {
+        let body = builder.body.clone();
+        let registers = std::mem::take(&mut builder.register_file);
+        let mut solver = Solver::new(&mut builder.type_variable_generator);
+
+        let mut constraints = Vec::new();
+        for instr in &body {
+            constraints.extend(solver.generate_constraints(instr));
+        }
+        constraints.extend(extra);
+        solver
+            .solve(&constraints)
+            .expect("constraints should solve");
+
+        emit_c(&body, &registers, &solver)
+    }
+
+    #[test]
+    fn row_extended_field_reaches_struct() {
+        // new { x } then store obj.y — the struct must contain both x and y,
+        // though y was never part of the NewObj literal.
+        let mut b = IRBuilder::default();
+        let n = b.const_int(1);
+        let obj = b.new_obj(vec![("x", n)]);
+        let m = b.const_int(2);
+        b.store(obj, "y", m);
+
+        let c = emit(&mut b).expect("should emit");
+
+        assert!(c.contains("struct R0 {"), "expected a struct def:\n{}", c);
+        // both fields present in the (single) struct
+        let struct_body = c
+            .split("struct R0 {")
+            .nth(1)
+            .and_then(|s| s.split("};").next())
+            .unwrap();
+        assert!(struct_body.contains("x;"), "x missing:\n{}", c);
+        assert!(struct_body.contains("y;"), "y missing:\n{}", c);
+    }
+
+    #[test]
+    fn structural_dedup_shares_one_struct() {
+        let mut b = IRBuilder::default();
+        let a = b.const_int(1);
+        let c1 = b.const_int(2);
+        let _o1 = b.new_obj(vec![("x", a)]);
+        let _o2 = b.new_obj(vec![("x", c1)]);
+
+        let c = emit(&mut b).expect("should emit");
+
+        assert_eq!(
+            c.matches("struct R0 {").count(),
+            1,
+            "identical shapes must share one struct:\n{}",
+            c
+        );
+        assert!(
+            !c.contains("struct R1 {"),
+            "no second struct expected:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn loadfunc_signature_drives_inference() {
+        // print_int : (int) -> int applied to a loaded field forces that
+        // field (and register) to int.
+        let mut b = IRBuilder::default();
+        let n = b.const_int(7);
+        let obj = b.new_obj(vec![("x", n)]);
+        let x = b.load(obj, "x");
+        let f = b.func("print_int", vec![Type::Int], Type::Int);
+        let _r = b.call(f, vec![x]);
+        b.ret(x);
+
+        let c = emit(&mut b).expect("should emit");
+
+        assert!(
+            c.contains("typedef int64_t (*fn0)(int64_t);"),
+            "expected fn typedef matching the signature:\n{}",
+            c
+        );
+        // print_int is a prelude function — no extern prototype for it
+        assert!(!c.contains("extern"), "prelude fn needs no extern:\n{}", c);
+    }
+
+    #[test]
+    fn unknown_loadfunc_gets_extern() {
+        let mut b = IRBuilder::default();
+        let n = b.const_int(3);
+        let f = b.func("triple", vec![Type::Int], Type::Int);
+        let r = b.call(f, vec![n]);
+        b.ret(r);
+
+        let c = emit(&mut b).expect("should emit");
+        assert!(
+            c.contains("extern int64_t triple(int64_t);"),
+            "expected extern prototype:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn unresolved_type_is_an_error() {
+        // A register whose type is never constrained cannot be lowered.
+        let mut b = IRBuilder::default();
+        let _dangling = b.reg();
+
+        let err = emit(&mut b).expect_err("unresolved type must error");
+        assert!(matches!(err, CodegenError::UnresolvedType(_)));
+    }
+
+    #[test]
+    fn unsupported_type_is_an_error() {
+        // Force a register to an interface type and confirm it is rejected.
+        let mut b = IRBuilder::default();
+        let r = b.reg();
+        let iface = Type::Interface(Row {
+            fields: BTreeMap::from([("x".to_string(), Type::Int)]),
+            tail: None,
+        });
+
+        let err = emit_with(&mut b, vec![Constraint::Equal(r.ty(), iface)])
+            .expect_err("interface-typed register must error");
+        assert!(matches!(err, CodegenError::Unsupported(_)));
+    }
+
+    #[test]
+    fn binop_lt_yields_bool() {
+        let mut b = IRBuilder::default();
+        let a = b.const_int(1);
+        let c1 = b.const_int(2);
+        let lt = b.binop(BinOpKind::Lt, a, c1);
+
+        // give the pipeline a valid solve and inspect the declared type
+        let body = b.body.clone();
+        let registers = std::mem::take(&mut b.register_file);
+        let mut solver = Solver::new(&mut b.type_variable_generator);
+        let mut constraints = Vec::new();
+        for instr in &body {
+            constraints.extend(solver.generate_constraints(instr));
+        }
+        solver.solve(&constraints).unwrap();
+
+        assert_eq!(solver.apply(lt.ty()), Type::Bool);
+        let c = emit_c(&body, &registers, &solver).expect("should emit");
+        assert!(
+            c.contains(&format!("bool {} =", lt)),
+            "lt should be bool:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a C compiler; run manually in verification"]
+    fn compile_and_run_smoke() {
+        use std::process::Command;
+
+        let mut b = IRBuilder::default();
+        let n = b.const_int(42);
+        let obj = b.new_obj(vec![("x", n)]);
+        b.store(obj, "y", n);
+        let y = b.load(obj, "y");
+        let one = b.const_int(1);
+        let sum = b.binop(BinOpKind::Add, y, one);
+        let f = b.func("print_int", vec![Type::Int], Type::Int);
+        let _ = b.call(f, vec![sum]);
+        b.store(obj, "z", sum);
+        b.ret(sum);
+
+        let c = emit(&mut b).expect("should emit");
+
+        let dir = std::env::temp_dir();
+        let src = dir.join("italics_smoke.c");
+        let bin = dir.join("italics_smoke");
+        std::fs::write(&src, &c).unwrap();
+        let status = Command::new("cc")
+            .arg(&src)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+            .unwrap();
+        assert!(status.success(), "cc failed:\n{}", c);
+        let out = Command::new(&bin).output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("43"), "expected 43, got: {}", stdout);
+    }
+}

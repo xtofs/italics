@@ -9,12 +9,12 @@ pub struct RegId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Reg {
     pub id: RegId,
-    pub ty: TypeVar,
+    pub tv: TypeVar,
 }
 
 impl Reg {
     pub fn ty(&self) -> Type {
-        Type::Unknown(self.ty)
+        Type::Unknown(self.tv)
     }
 }
 
@@ -37,7 +37,7 @@ impl RegGenerator {
     pub fn fresh(&mut self, tv: TypeVar) -> Reg {
         let id = RegId(self.next);
         self.next += 1;
-        Reg { id, ty: tv }
+        Reg { id, tv }
     }
 }
 

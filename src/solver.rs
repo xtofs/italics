@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::constraints::Constraint;
+use crate::instructions::{BinOpKind, Value};
 use crate::types::{Existential, FuncType, Row, Type};
 use crate::variables::TypeVar;
 use crate::{Instr, TypeVarGenerator};
@@ -573,6 +574,39 @@ impl<'a> Solver<'a> {
                 });
 
                 vec![Constraint::Equal(func.ty(), func_ty)]
+            }
+
+            Instr::Const { dst, value } => {
+                let ty = match value {
+                    Value::Int(_) => Type::Int,
+                    Value::Bool(_) => Type::Bool,
+                };
+                vec![Constraint::Equal(dst.ty(), ty)]
+            }
+
+            Instr::BinOp { dst, op, lhs, rhs } => {
+                // operands are always ints; the result is bool for comparisons
+                let dst_ty = match op {
+                    BinOpKind::Lt => Type::Bool,
+                    _ => Type::Int,
+                };
+                vec![
+                    Constraint::Equal(lhs.ty(), Type::Int),
+                    Constraint::Equal(rhs.ty(), Type::Int),
+                    Constraint::Equal(dst.ty(), dst_ty),
+                ]
+            }
+
+            Instr::LoadFunc { dst, name: _, sig } => {
+                // The runtime function's declared signature enters the
+                // constraint system and unifies with the func type a later
+                // Call synthesizes, so argument/return types flow both ways.
+                vec![Constraint::Equal(dst.ty(), Type::Func(sig.clone()))]
+            }
+
+            Instr::Ret { src } => {
+                // The program result is the exit-observable int.
+                vec![Constraint::Equal(src.ty(), Type::Int)]
             }
         }
     }

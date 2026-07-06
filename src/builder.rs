@@ -1,5 +1,6 @@
-use crate::instructions::Instr;
+use crate::instructions::{BinOpKind, Instr, Value};
 use crate::registers::{Reg, RegGenerator, RegisterFile};
+use crate::types::{FuncType, Type};
 use crate::variables::TypeVarGenerator;
 
 #[derive(Debug, Default)]
@@ -59,5 +60,50 @@ impl IRBuilder {
         let ret = self.reg();
         self.body.push(Instr::Call { func, args, ret });
         ret
+    }
+
+    pub fn const_int(&mut self, v: i64) -> Reg {
+        let dst = self.reg();
+        self.body.push(Instr::Const {
+            dst,
+            value: Value::Int(v),
+        });
+        dst
+    }
+
+    pub fn const_bool(&mut self, v: bool) -> Reg {
+        let dst = self.reg();
+        self.body.push(Instr::Const {
+            dst,
+            value: Value::Bool(v),
+        });
+        dst
+    }
+
+    pub fn binop(&mut self, op: BinOpKind, lhs: Reg, rhs: Reg) -> Reg {
+        let dst = self.reg();
+        self.body.push(Instr::BinOp { dst, op, lhs, rhs });
+        dst
+    }
+
+    /// Load a runtime-defined function into a register, describing its
+    /// signature so the solver can constrain the argument/return types.
+    pub fn func(&mut self, name: impl Into<String>, params: Vec<Type>, ret: Type) -> Reg {
+        let dst = self.reg();
+        let sig = FuncType {
+            params,
+            ret: Box::new(ret),
+            stack: None,
+        };
+        self.body.push(Instr::LoadFunc {
+            dst,
+            name: name.into(),
+            sig,
+        });
+        dst
+    }
+
+    pub fn ret(&mut self, src: Reg) {
+        self.body.push(Instr::Ret { src });
     }
 }

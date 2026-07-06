@@ -38,6 +38,10 @@
   - `load(src, field)` — `Load` instruction, returning destination register
   - `store(dst, field, src)` — `Store` instruction
   - `call(func, args)` — `Call` instruction, returning destination register
+  - `const_int(v)` / `const_bool(v)` — `Const` instruction, returning destination register
+  - `binop(op, lhs, rhs)` — `BinOp` instruction (`Add`/`Sub`/`Mul`/`Lt`), returning destination register
+  - `func(name, params, ret)` — `LoadFunc` instruction: load a runtime-defined function into a register, describing its signature as a constraint
+  - `ret(src)` — `Ret` instruction (program result)
 
 - **Instructions (`Instr`)**  
   Current set:
@@ -45,6 +49,10 @@
   - `Store { dst, field, src }`
   - `NewObj { dst, fields }`
   - `Call { func, args, ret }`
+  - `Const { dst, value }` — an `int`/`bool` literal
+  - `BinOp { dst, op, lhs, rhs }` — arithmetic/comparison (`Lt` yields `bool`, the rest `int`)
+  - `LoadFunc { dst, name, sig }` — load a runtime function by name; `sig` is a `FuncType` that enters the constraint system
+  - `Ret { src }` — the program's result value
 
 ## 2. Constraint system
 
@@ -88,6 +96,12 @@
   - `Call`:
     - Construct a `FuncType` from argument register types and return register type
     - `Equal(func.ty(), Func(func_type))`
+  - `Const`: `Equal(dst.ty(), Int)` or `Equal(dst.ty(), Bool)` per the literal
+  - `BinOp`: `Equal(lhs.ty(), Int)`, `Equal(rhs.ty(), Int)`, and `Equal(dst.ty(), …)` (`Bool` for `Lt`, else `Int`)
+  - `LoadFunc`: `Equal(dst.ty(), Func(sig))` — the declared signature unifies with the `Func` type a later `Call` on the same register synthesizes, so argument/return types flow both ways
+  - `Ret`: `Equal(src.ty(), Int)`
+
+  All four new instructions reuse `Equal` (weight 2), so the solver needs no new constraint kinds or ordering changes.
 
 ## 3. Solver
 
@@ -120,10 +134,35 @@ Not yet implemented: existential unification, `Subtype` beyond `Record <: Interf
 4. Iterate over `body` and call `generate_constraints` for each instruction.
 5. Collect constraints.
 6. Pass constraints to `Solver::solve`.
-7. Later: use solved types to emit C or LLVM IR.
+7. Emit C from the solved types via `emit_c` (see §5).
 
 This architecture mirrors iTalX/TAL ideas:
 - per-function type variables and registers
 - structural object/interface typing via rows
 - constraint-based type reconstruction
 - separation between IR and solver (IR never mutated).
+
+## 5. Code generation
+
+`codegen::emit_c(body, registers, solver)` turns the solved IR into a runnable C
+translation unit — the payoff of inference made physical. It takes each
+register's concrete type straight from `solver.apply(reg.ty())` (no solver
+changes) and lowers it:
+
+- `Int` → `int64_t`, `Bool` → `bool`, `Ptr(t)` → `<t>*`.
+- `Record(row)` → a heap-allocated `struct R<n>` behind a pointer; `NewObj`
+  becomes `calloc`, field access becomes `->`. Structs are **structurally
+  deduplicated**: identical field shapes share one definition. An open row
+  *tail* is closed at codegen time (width polymorphism collapses to the
+  inferred width) with a `/* row closed from ρn */` note in the struct.
+- `Func(ft)` → an interned function-pointer `typedef fn<n>`. `LoadFunc` names
+  known to the prelude (`print_int`, `print_bool`) are emitted inline; unknown
+  names get `extern` prototypes.
+
+The headline observable: because `load`/`store` extend an open record's row,
+the emitted struct contains fields that never appeared in the `NewObj`
+literal — inference driving the physical layout. See `examples/codegen.rs`.
+
+**Unresolved types are an error** (`CodegenError::UnresolvedType`), not a silent
+default — defaulting would hide exactly the inference gaps the demo exists to
+surface. Interface/existential/stack-typed registers are `Unsupported`.

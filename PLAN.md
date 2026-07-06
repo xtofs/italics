@@ -112,3 +112,21 @@ a type variable may never be bound to a row variable
 `generate_constraints` → `solve`), including the headline row-tail-extension
 case: `new_obj {x}` followed by `load obj.y` solves, and the object's type
 becomes `record { x, y | ρ }`.
+
+---
+
+## 4. Code generation (landed — originally out of scope)
+
+The inference core is now exercised by a C backend that turns solved types into
+runnable code, demonstrating the payoff of inference. See `src/codegen.rs`
+(`emit_c`), `examples/codegen.rs`, and ARCHITECTURE.md §5.
+
+- Four new instructions (`Const`, `BinOp`, `LoadFunc`, `Ret`) let a program
+  ground to concrete types, do arithmetic, load runtime functions with their
+  signature as a constraint, and return a result. All reuse the existing
+  `Equal` constraint — the solver is unchanged.
+- Records lower to structurally-deduplicated, heap-allocated structs behind
+  pointers; open row tails are closed at codegen. The demo's `struct R0` gains
+  `y` and `z` — fields added purely by row-tail extension, never present in the
+  `NewObj` literal — making inference visible in the physical layout.
+- Unresolved register types are a codegen error, not a silent default.

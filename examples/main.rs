@@ -123,7 +123,10 @@ fn example_subtype_ok(b: &mut IRBuilder) -> Vec<Constraint> {
     let r_y = b.reg();
     let point = b.new_obj(vec![("x", r_x), ("y", r_y)]);
 
-    vec![Constraint::Subtype(point.ty(), interface(vec![("x", Type::Int)]))]
+    vec![Constraint::Subtype(
+        point.ty(),
+        interface(vec![("x", Type::Int)]),
+    )]
 }
 
 /// The object { x } does NOT satisfy the interface { x, y }: the interface
@@ -180,7 +183,7 @@ fn run(name: &str, example_fn: fn(&mut IRBuilder) -> Vec<Constraint>) {
 
     println!("\n    register types:");
     for reg in builder.register_file.iter() {
-        let ty = solver.apply(Type::Unknown(reg.ty));
+        let ty = solver.apply(Type::Unknown(reg.tv));
         println!("        {}: {}", reg, ty);
     }
 
