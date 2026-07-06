@@ -1,132 +1,33 @@
-# PLAN: Row‑Polymorphic Type Inference — Open Records, Row Tails, and Row‑Tail Extension
+# Project Plan
 
-## 1. Goal
+This file tracks current status and near-term work. Architectural detail lives
+in `ARCHITECTURE.md`. C backend specifics live in `CODE_GEN_PLAN.md`.
 
-Implement full row‑polymorphic record typing in the IR + constraint solver pipeline. This includes:
+## Current Status
 
-- Open record generation in `generate_constraints`
-- Row tail creation and kind assignment
-- RowHasField + RowFieldType constraints
-- Row‑tail extension in the solver
-- End‑to‑end inference test demonstrating row‑tail extension
+Completed:
 
-The IRBuilder remains untyped. All type construction happens in `generate_constraints`.
+- Row-polymorphic inference with open-row extension.
+- Weighted constraint solving (`RowHasField` -> `RowFieldType` -> `Equal` -> relational).
+- C backend (`emit_c`) with structural record deduplication.
+- End-to-end examples for inference and codegen.
+- Display centralization in `src/display.rs` with ASCII default and Unicode feature mode.
 
----
+## Active Goals
 
-## 2. Architectural Invariants
+1. Keep docs concise and non-duplicated.
+2. Preserve deterministic outputs in examples and generated code.
+3. Maintain strong failure behavior for unresolved/unsupported types.
 
-### 2.1 IRBuilder
+## Next Milestones
 
-- Creates registers and instructions only.
-- Does not create types.
-- Does not create row tails.
-- Does not assign kinds.
-- Every register gets a fresh `TypeVar` from the shared `TypeVarGenerator`.
+1. Expand subtype support beyond `Record <: Interface`.
+2. Add existential type solving (or formally scope it out).
+3. Improve codegen diagnostics with richer source/instruction context.
+4. Add a small CLI wrapper for stable generation workflows.
 
-### 2.2 TypeVarGenerator
+## Non-Goals (for now)
 
-- Single shared instance for the entire pipeline.
-- Used by IRBuilder and Solver.
-- Generates all type variables (normal and row‑kind).
-
-### 2.3 Constraint Generator
-
-Responsible for creating:
-
-- Open record types
-- Row tails
-- Function types
-- Interface types
-- All constraints
-
-### 2.4 Solver
-
-Responsible for:
-
-- Unification
-- Row‑tail extension
-- Row‑tail unification
-- Subtyping
-- Kind checking
-
-Solver must use the same `TypeVarGenerator` as IRBuilder.
-
----
-
-## 3. Required Changes (implemented)
-
-### 3.1 Fresh-variable helpers on Solver
-
-Kinds are carried by a tag bit on `TypeVar` itself (`vars.rs`: `fresh_row()`
-sets bit 31, `TypeVar::is_row()`), replacing the earlier `kinds:
-HashMap<TypeVar, Kind>` design.
-
-```rust
-fn fresh_tv(&mut self) -> TypeVar {
-    self.tvg.fresh()
-}
-
-fn fresh_row_tail_var(&mut self) -> TypeVar {
-    let tv = self.tvg.fresh_row();
-    self.row_tail_vars.insert(tv);
-    tv
-}
-```
-
-### 3.2 Row flattening (`resolve_row`)
-
-Row-tail extension binds a tail variable to a row *fragment*
-(`Record { new fields | fresh tail }`). `resolve_row` follows that chain and
-merges the fields, so every consumer (unification, field constraints,
-reporting) sees the full accumulated row. `resolve_type` chases variable
-substitutions and flattens row types.
-
-### 3.3 Field lookup with extension (`lookup_or_extend_field`)
-
-`RowHasField` and `RowFieldType` share one helper:
-
-- field present → return its type
-- field missing, row open → bind the tail to a fragment holding the field
-  (fresh type var) plus a fresh tail; return the fresh field type
-- field missing, row closed → type error
-- type still an unbound variable → bind it to a fresh open record containing
-  just the field (makes constraint order less brittle)
-
-### 3.4 Open-row unification (`unify_row`)
-
-Rémy-style: shared fields unify pointwise; fields exclusive to one side are
-absorbed into the other side's tail. Both-open rows share a fresh common
-tail; a closed row missing fields is a type error; identical tails cannot
-absorb differing fields.
-
-### 3.5 Kind checking (`bind_var` / `check_kind`)
-
-A row variable may only be bound to a row fragment or another row variable;
-a type variable may never be bound to a row variable
-(`TypeError::KindMismatch`).
-
-### 3.6 End-to-end tests
-
-`src/solver.rs` has a test module driving the full pipeline (IRBuilder →
-`generate_constraints` → `solve`), including the headline row-tail-extension
-case: `new_obj {x}` followed by `load obj.y` solves, and the object's type
-becomes `record { x, y | ρ }`.
-
----
-
-## 4. Code generation (landed — originally out of scope)
-
-The inference core is now exercised by a C backend that turns solved types into
-runnable code, demonstrating the payoff of inference. See `src/codegen.rs`
-(`emit_c`), `examples/codegen.rs`, and ARCHITECTURE.md §5.
-
-- Four new instructions (`Const`, `BinOp`, `LoadFunc`, `Ret`) let a program
-  ground to concrete types, do arithmetic, load runtime functions with their
-  signature as a constraint, and return a result. All reuse the existing
-  `Equal` constraint — the solver is unchanged.
-- Records lower to structurally-deduplicated, heap-allocated structs behind
-  pointers; open row tails are closed at codegen. The demo's `struct R0` gains
-  `y` and `z` — fields added purely by row-tail extension, never present in the
-  `NewObj` literal — making inference visible in the physical layout.
-- Unresolved register types are a codegen error, not a silent default.
+- General fixpoint constraint solving.
+- LLVM backend implementation.
+- Runtime GC / ownership model beyond current `calloc`-based demo output.
