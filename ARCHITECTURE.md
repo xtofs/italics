@@ -59,8 +59,8 @@
 - **Constraints (`Constraint`)**  
   Represent relationships between types:
   - `Equal(Type, Type)` — unification
-  - `RowHasField(Type, String)` — the row **has** a field of the given name (presence/shape only, printed `f ∈ r`)
-  - `RowFieldType(Type, String, Type)` — the named field's **type** must unify with the given type; it does not itself require the field to exist (printed `f: t ∈ r`)
+  - `RowHasField(Type, String)` — the row **has** a field of the given name (presence/shape only, printed `f :in: r` by default, `f ∈ r` with `pretty-unicode`)
+  - `RowFieldType(Type, String, Type)` — the named field's **type** must unify with the given type; it does not itself require the field to exist (printed `f: t :in: r` by default, `f: t ∈ r` with `pretty-unicode`)
   - `Subtype(Type, Type)` — row/interface inclusion
   - `StackEqual(Vec<Type>, Vec<Type>)` — stack typing equality
 
@@ -70,7 +70,7 @@
   - `RowHasField(row, f)` owns **existence**: it asserts that `f` is present.
     The solver (`check_row_has_field`) looks the field up and, if it is
     missing on an open row, extends the row's tail to admit it (a missing
-    field on a closed row is an error). It constrains the record's *shape*,
+    field on a closed row is an error). It constrains the record's _shape_,
     not the field's type.
   - `RowFieldType(row, f, t)` owns the **type link**: it asserts that `f`'s
     type unifies with `t`. It does not, on its own, require `f` to exist —
@@ -79,8 +79,8 @@
   The two are emitted together as a pair for `Load` and `Store`, so
   `RowHasField` guarantees the field is there (extending the row if needed)
   and `RowFieldType` ties its type to a register. Example: `load dst = obj.f`
-  emits `f ∈ τ_obj` (obj must have `f`) and `f: τ_dst ∈ τ_obj` (that `f`'s
-  type is the load destination's type).
+  emits `f :in: t_obj` (obj must have `f`) and `f: t_dst :in: t_obj` (that
+  `f`'s type is the load destination's type) by default.
 
 - **Constraint generation (`generate_constraints`)**  
   For each instruction:
@@ -137,6 +137,7 @@ Not yet implemented: existential unification, `Subtype` beyond `Record <: Interf
 7. Emit C from the solved types via `emit_c` (see §5).
 
 This architecture mirrors iTalX/TAL ideas:
+
 - per-function type variables and registers
 - structural object/interface typing via rows
 - constraint-based type reconstruction
@@ -153,7 +154,7 @@ changes) and lowers it:
 - `Record(row)` → a heap-allocated `struct R<n>` behind a pointer; `NewObj`
   becomes `calloc`, field access becomes `->`. Structs are **structurally
   deduplicated**: identical field shapes share one definition. An open row
-  *tail* is closed at codegen time (width polymorphism collapses to the
+  _tail_ is closed at codegen time (width polymorphism collapses to the
   inferred width) with a `/* row closed from ρn */` note in the struct.
 - `Func(ft)` → an interned function-pointer `typedef fn<n>`. `LoadFunc` names
   known to the prelude (`print_int`, `print_bool`) are emitted inline; unknown

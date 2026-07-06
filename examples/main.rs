@@ -85,8 +85,9 @@ fn example_store_field(b: &mut IRBuilder) -> Vec<Constraint> {
 ///   pair used for real field access: presence first creates the field, then
 ///   the type link fixes it to `bool`.
 ///
-/// Expect the object to infer as `{ x, both: bool, present: τ | ρ }` — with no
-/// `typed_only`.
+/// Expect the object to infer as
+/// `{ x, both: bool, present: t_n | r_n }` by default (Unicode style with
+/// `pretty-unicode`) — with no `typed_only`.
 fn example_has_field_vs_field_type(b: &mut IRBuilder) -> Vec<Constraint> {
     let r_x = b.reg();
     let obj = b.new_obj(vec![("x", r_x)]);
@@ -177,7 +178,12 @@ fn run(name: &str, example_fn: fn(&mut IRBuilder) -> Vec<Constraint>) {
 
         println!("    substitutions:");
         for (v, ty) in &solver.substitutions {
-            println!("        {} ↦ {}", v, ty);
+            println!(
+                "        {} {} {}",
+                v,
+                italics::display::symbol(italics::display::Symbol::SubstitutionArrow),
+                ty
+            );
         }
     }
 
@@ -191,7 +197,12 @@ fn run(name: &str, example_fn: fn(&mut IRBuilder) -> Vec<Constraint>) {
         println!("\n    bound row tails:");
         for (v, ty) in &solver.substitutions {
             if v.is_row() {
-                println!("        {} ↦ {}", v, ty);
+                println!(
+                    "        {} {} {}",
+                    v,
+                    italics::display::symbol(italics::display::Symbol::SubstitutionArrow),
+                    ty
+                );
             }
         }
     }

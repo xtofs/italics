@@ -101,7 +101,7 @@ impl Instr {
     }
 }
 
-// obj = { x: τ0, y: τ1 }
+// obj = { x: t_0, y: t_1 }
 // load obj.x
 // call f(obj, obj.x)
 

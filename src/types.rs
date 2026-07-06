@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fmt::Write;
 
+use crate::display::{self, Subscript, Symbol, symbol};
 use crate::variables::TypeVar;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -69,7 +69,7 @@ impl fmt::Display for Type {
                     }
                     write!(fmt, "{item}")?;
                 }
-                write!(fmt, ") → {}", func_type.ret)
+                write!(fmt, ") {} {}", symbol(Symbol::FunctionArrow), func_type.ret)
             }
             Type::Record(row) => write!(fmt, "record {}", row),
             Type::Interface(row) => write!(fmt, "interface {}", row),
@@ -82,38 +82,7 @@ impl fmt::Display for Type {
 
 impl fmt::Display for TypeVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let letter = if self.is_row() { 'ρ' } else { 'τ' };
+        let letter = display::type_var_letter(self.is_row());
         write!(f, "{}{}", letter, Subscript(self.index()))
-    }
-}
-
-struct Subscript(u32);
-
-impl fmt::Display for Subscript {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut n = self.0;
-
-        // Special case for zero
-        if n == 0 {
-            return fmt.write_char('\u{2080}');
-        }
-
-        // Maximum digits for u32 is 10 (4_294_967_295)
-        let mut buf = [0u8; 10];
-
-        // Extract digits backwards
-        let mut i = buf.len();
-        while n != 0 {
-            i -= 1;
-            buf[i] = (n % 10) as u8;
-            n /= 10;
-        }
-
-        for &digit in &buf[i..] {
-            let ch = char::from_u32(0x2080 + (digit as u32)).expect("digit should be in 0..=9");
-            fmt.write_char(ch)?;
-        }
-
-        Ok(())
     }
 }

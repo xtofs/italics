@@ -28,7 +28,7 @@ LoadFunc{ dst: Reg, name: String, sig: FuncType },
 Ret     { src: Reg },
 ```
 
-Extend `Display for Instr` in the existing style: `const reg0 = 42`, `add  reg2 = reg0 + reg1`, `func reg3 = @print_int : (int) → int`, `ret  reg4`.
+Extend `Display for Instr` in the existing style: `const reg0 = 42`, `add  reg2 = reg0 + reg1`, `func reg3 = @print_int : (int) -> int` (or `→` with `pretty-unicode`), `ret  reg4`.
 
 ## 2. Builder methods — [src/builder.rs](src/builder.rs)
 
@@ -50,14 +50,14 @@ New arms (all reuse `Constraint::Equal`, weight 2 — no new constraint kinds or
 
 - `Const` → `Equal(dst.ty(), Int)` or `Equal(dst.ty(), Bool)` per `Value`.
 - `BinOp` → `Equal(lhs.ty(), Int)`, `Equal(rhs.ty(), Int)`, `Equal(dst.ty(), Int)` (dst is `Bool` for `Lt`).
-- `LoadFunc` → `Equal(dst.ty(), Func(sig.clone()))` — the signature enters the constraint system and unifies with the `Equal` that a later `Call` on the same register generates, so argument/return types flow both ways (e.g. `print_int`'s `(int) → int` forces the loaded field to `int`).
+- `LoadFunc` → `Equal(dst.ty(), Func(sig.clone()))` — the signature enters the constraint system and unifies with the `Equal` that a later `Call` on the same register generates, so argument/return types flow both ways (e.g. `print_int`'s `(int) -> int` forces the loaded field to `int`).
 - `Ret` → `Equal(src.ty(), Int)` (program result is the exit-observable int).
 
 ## 4. Codegen module — new [src/codegen.rs](src/codegen.rs)
 
 ```rust
 pub enum CodegenError {
-    UnresolvedType(String),   // names the register and the τ var
+   UnresolvedType(String),   // names the register and the t var
     Unsupported(String),      // Interface/Existential/Stack-typed register, etc.
 }
 
@@ -69,7 +69,7 @@ Internally a small `CodeGen` struct holding interning tables. Passes:
 1. **Ground register types.** For every register: `solver.apply(reg.ty())` (existing public API — no solver changes).
 2. **Lower `Type` → C type string**, interning as it goes:
    - `Int` → `int64_t`, `Bool` → `bool`, `Ptr(t)` → `<t>*`.
-   - `Record(row)` → `struct R<n> *`. Structural dedup: key = the lowered `(name, ctype)` field list (the `BTreeMap` already sorts field names); identical shapes share one struct. Field types are lowered depth-first, so nested records get smaller ids and plain id-order emission is dependency-correct (occurs check guarantees no recursive types). An open tail is dropped with a `/* closed from ρn */` comment in the struct def.
+   - `Record(row)` → `struct R<n> *`. Structural dedup: key = the lowered `(name, ctype)` field list (the `BTreeMap` already sorts field names); identical shapes share one struct. Field types are lowered depth-first, so nested records get smaller ids and plain id-order emission is dependency-correct (occurs check guarantees no recursive types). An open tail is dropped with a `/* closed from r_n */` comment in the struct def.
    - `Func(ft)` → interned function-pointer `typedef` (`typedef int64_t (*fn<n>)(struct R0 *, int64_t);`).
    - `Unknown(tv)` (non-row) → `CodegenError::UnresolvedType`.
    - `Interface`/`Existential`/`Stack` → `Unsupported`.
@@ -111,7 +111,7 @@ store obj.z = sum                // row extension again: struct gains z
 ret sum
 ```
 
-The example prints the IR body, the constraints, the solved register types (reusing the reporting style of [examples/main.rs](examples/main.rs)'s `run`), then the generated C — and writes it to `target/generated.c` so the verification step below can compile it. The headline observable: `struct R0 { int64_t x; int64_t y; int64_t z; /* closed from ρn */ };` where `y`/`z` exist purely through inference.
+The example prints the IR body, the constraints, the solved register types (reusing the reporting style of [examples/main.rs](examples/main.rs)'s `run`), then the generated C — and writes it to `target/generated.c` so the verification step below can compile it. The headline observable: `struct R0 { int64_t x; int64_t y; int64_t z; /* closed from r_n */ };` where `y`/`z` exist purely through inference.
 
 ## 6. Tests — `#[cfg(test)]` in src/codegen.rs
 
@@ -119,7 +119,7 @@ Drive the real pipeline (IRBuilder → generate_constraints → solve → emit_c
 
 - **Row-extended field reaches the struct**: `new {x}` + `store obj.y` → emitted C contains a struct def with both `x` and `y`.
 - **Structural dedup**: two `new_obj`s with identical shapes → exactly one struct definition.
-- **LoadFunc signature drives inference**: `func @print_int : (int) → int` + `call f(load obj.x)` → obj's `x` lowers to `int64_t`, and the extern/typedef line matches the signature.
+- **LoadFunc signature drives inference**: `func @print_int : (int) -> int` + `call f(load obj.x)` -> obj's `x` lowers to `int64_t`, and the extern/typedef line matches the signature.
 - **Unresolved type is an error**: a register with a never-constrained τ → `CodegenError::UnresolvedType`.
 - **Unsupported type is an error**: an interface-typed register → `Unsupported`.
 - **Compile-and-run smoke test** (`#[ignore]`d, run manually / in verification): write emitted C to a temp file, `cc` it, execute, assert stdout is `42\n…` etc.

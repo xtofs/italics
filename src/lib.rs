@@ -1,6 +1,7 @@
 pub mod builder;
 pub mod codegen;
 pub mod constraints;
+pub mod display;
 pub mod instructions;
 pub mod registers;
 pub mod solver;
