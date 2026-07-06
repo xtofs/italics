@@ -3,6 +3,7 @@
 `italics` is a typed IR playground with row-polymorphic type inference and a C backend.
 
 The project demonstrates:
+
 - register-based IR construction
 - constraint generation and unification
 - open-row extension (`load`/`store` can grow record shape)
@@ -34,6 +35,7 @@ cc target/generated.c -o target/generated
 ## Display Modes
 
 Default output is ASCII (for logs/comments/type rendering):
+
 - type vars: `t_0`, `r_3`
 - arrows/operators: `->`, `:in:`, `<:`, `=>`
 
@@ -61,5 +63,4 @@ Unicode mode uses symbols like `τ`, `ρ`, `→`, `∈`, `⊆`, `↦`.
 ## Documentation
 
 - Architecture and design reference: `ARCHITECTURE.md`
-- Current roadmap/status: `PLAN.md`
-- C backend notes and verification focus: `CODE_GEN_PLAN.md`
+- Roadmap and upcoming work: `PLAN.md`

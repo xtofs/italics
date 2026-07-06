@@ -1,33 +1,35 @@
 # Project Plan
 
-This file tracks current status and near-term work. Architectural detail lives
-in `ARCHITECTURE.md`. C backend specifics live in `CODE_GEN_PLAN.md`.
+This file is the single planning document for upcoming work.
 
-## Current Status
-
-Completed:
-
-- Row-polymorphic inference with open-row extension.
-- Weighted constraint solving (`RowHasField` -> `RowFieldType` -> `Equal` -> relational).
-- C backend (`emit_c`) with structural record deduplication.
-- End-to-end examples for inference and codegen.
-- Display centralization in `src/display.rs` with ASCII default and Unicode feature mode.
+Architecture and implemented behavior are documented in `ARCHITECTURE.md` and
+`README.md`.
 
 ## Active Goals
 
-1. Keep docs concise and non-duplicated.
-2. Preserve deterministic outputs in examples and generated code.
-3. Maintain strong failure behavior for unresolved/unsupported types.
+1. Keep docs concise and avoid duplication.
+2. Keep generated outputs deterministic and easy to diff.
+3. Preserve strict error behavior for unresolved/unsupported type lowering.
 
-## Next Milestones
+## Milestones
 
-1. Expand subtype support beyond `Record <: Interface`.
-2. Add existential type solving (or formally scope it out).
-3. Improve codegen diagnostics with richer source/instruction context.
-4. Add a small CLI wrapper for stable generation workflows.
+1. Type system and solver
+   - Expand subtype handling beyond `Record <: Interface`.
+   - Add existential type solving or explicitly remove existentials from surface APIs.
+   - Improve error reporting with clearer source context.
+
+2. Code generation ergonomics
+   - Add richer diagnostics in `CodegenError` (instruction/register context).
+   - Make `examples/codegen.rs` output path independent from invocation directory.
+   - Add small utility entry point for stable `emit_c` workflows.
+
+3. Testing and validation
+   - Add targeted tests for subtype edge cases and existential behavior decisions.
+   - Add codegen golden tests for display modes (ASCII and `pretty-unicode`).
+   - Expand integration verification for generated C compile/run behavior.
 
 ## Non-Goals (for now)
 
 - General fixpoint constraint solving.
 - LLVM backend implementation.
-- Runtime GC / ownership model beyond current `calloc`-based demo output.
+- Runtime GC/ownership model beyond current `calloc`-based demo semantics.
