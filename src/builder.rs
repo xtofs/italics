@@ -1,4 +1,5 @@
 use crate::instructions::{BinOpKind, Instr, Value};
+use crate::program::IRFunction;
 use crate::registers::{Reg, RegGenerator, RegisterFile};
 use crate::types::{FuncType, Type};
 use crate::variables::TypeVarGenerator;
@@ -26,6 +27,17 @@ impl IRBuilder {
         let reg = self.register_generator.fresh(tv);
         self.register_file.add(reg);
         reg
+    }
+
+    /// Return the parameter register at `index`, reserving parameter registers
+    /// from `reg0` upward as needed.
+    pub fn param(&mut self, index: usize) -> Reg {
+        while self.register_file.len() <= index {
+            let _ = self.reg();
+        }
+        self.register_file
+            .get(index)
+            .expect("parameter register index must exist after reservation")
     }
 
     pub fn new_obj(&mut self, fields: Vec<(impl Into<String>, Reg)>) -> Reg {
@@ -105,5 +117,43 @@ impl IRBuilder {
 
     pub fn ret(&mut self, src: Reg) {
         self.body.push(Instr::Ret { src });
+    }
+
+    /// Finalize this builder into a named IR function with an explicit
+    /// signature. This is the first step toward intra-IR function definitions.
+    pub fn finish(mut self, name: impl Into<String>, params: Vec<Type>, ret: Type) -> IRFunction {
+        // Reserve predictable parameter registers [reg0..regN) even when the
+        // caller did not request them explicitly during IR construction.
+        while self.register_file.len() < params.len() {
+            let _ = self.reg();
+        }
+
+        IRFunction::new(name, params, ret, self.body, self.register_file)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn param_reserves_predictable_register_id() {
+        let mut b = IRBuilder::default();
+        let p0 = b.param(0);
+        let p2 = b.param(2);
+
+        assert_eq!(p0.id.0, 0);
+        assert_eq!(p2.id.0, 2);
+    }
+
+    #[test]
+    fn finish_reserves_missing_parameter_registers() {
+        let b = IRBuilder::default();
+        let f = b.finish("f", vec![Type::Int, Type::Int], Type::Int);
+
+        let regs: Vec<_> = f.registers.iter().collect();
+        assert!(regs.len() >= 2);
+        assert_eq!(regs[0].id.0, 0);
+        assert_eq!(regs[1].id.0, 1);
     }
 }

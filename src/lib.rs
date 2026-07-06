@@ -3,15 +3,17 @@ pub mod codegen;
 pub mod constraints;
 pub mod display;
 pub mod instructions;
+pub mod program;
 pub mod registers;
 pub mod solver;
 pub mod types;
 pub mod variables;
 
 pub use builder::IRBuilder;
-pub use codegen::{CodegenError, emit_c};
+pub use codegen::{CodegenError, ProgramCodegenError, emit_c, emit_c_program};
 pub use constraints::Constraint;
 pub use instructions::Instr;
+pub use program::{IRFunction, IRProgram, type_var_generator_for_function};
 pub use registers::{Reg, RegGenerator, RegId, RegisterFile};
 pub use solver::{Solver, TypeError};
 pub use types::{Existential, FuncType, Row, Type};

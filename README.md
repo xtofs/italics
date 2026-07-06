@@ -17,12 +17,16 @@ From repository root:
 cargo test
 cargo run --example main
 cargo run --example codegen
+cargo run --example pipeline
+cargo run --example irbuilder
 ```
 
-The codegen example writes generated C to:
+The codegen examples write generated C to:
 
 ```text
 target/generated.c
+target/generated_program.c
+target/generated_pipeline.c
 ```
 
 Then compile and run it manually:
@@ -58,7 +62,9 @@ Unicode mode uses symbols like `τ`, `ρ`, `→`, `∈`, `⊆`, `↦`.
 ## Examples
 
 - `examples/main.rs`: inference walkthrough and constraint/debug output
-- `examples/codegen.rs`: end-to-end inference -> C emission -> runnable program
+- `examples/codegen.rs`: program-level API usage (`IRProgram` + `emit_c_program`) with internal function calls and parameter passing
+- `examples/pipeline.rs`: stage-by-stage pipeline demo (IR -> constraints -> solving -> inferred types -> C)
+- `examples/irbuilder.rs`: end-to-end single-function inference -> C emission demo
 
 ## Documentation
 

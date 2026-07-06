@@ -54,4 +54,12 @@ impl RegisterFile {
     pub fn iter(&self) -> impl Iterator<Item = Reg> + '_ {
         self.registers.iter().copied()
     }
+
+    pub fn len(&self) -> usize {
+        self.registers.len()
+    }
+
+    pub fn get(&self, index: usize) -> Option<Reg> {
+        self.registers.get(index).copied()
+    }
 }

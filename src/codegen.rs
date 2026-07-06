@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Write as _;
 
 use crate::instructions::Instr;
+use crate::program::{IRFunction, IRProgram, type_var_generator_for_function};
 use crate::registers::{RegId, RegisterFile};
-use crate::solver::Solver;
+use crate::solver::{Solver, TypeError};
 use crate::types::Type;
 
 /// Runtime functions the emitted prelude defines itself. A `LoadFunc` naming
@@ -32,6 +33,47 @@ impl fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+#[derive(Debug)]
+pub enum ProgramCodegenError {
+    MissingEntry(String),
+    DuplicateFunction(String),
+    Unsupported(String),
+    Type(TypeError),
+    Codegen(CodegenError),
+}
+
+impl fmt::Display for ProgramCodegenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProgramCodegenError::MissingEntry(name) => {
+                write!(f, "entry function {:?} was not found", name)
+            }
+            ProgramCodegenError::DuplicateFunction(name) => {
+                write!(f, "duplicate function name {:?}", name)
+            }
+            ProgramCodegenError::Unsupported(msg) => {
+                write!(f, "unsupported program construct: {}", msg)
+            }
+            ProgramCodegenError::Type(err) => write!(f, "type error: {:?}", err),
+            ProgramCodegenError::Codegen(err) => write!(f, "codegen error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for ProgramCodegenError {}
+
+impl From<TypeError> for ProgramCodegenError {
+    fn from(value: TypeError) -> Self {
+        ProgramCodegenError::Type(value)
+    }
+}
+
+impl From<CodegenError> for ProgramCodegenError {
+    fn from(value: CodegenError) -> Self {
+        ProgramCodegenError::Codegen(value)
+    }
+}
+
 /// A structurally-deduplicated record layout, emitted as `struct R<id>`.
 struct StructDef {
     id: usize,
@@ -50,6 +92,7 @@ struct FnDef {
 
 struct CodeGen<'a, 'b> {
     solver: &'a Solver<'b>,
+    name_prefix: String,
     structs: Vec<StructDef>,
     struct_index: HashMap<Vec<(String, String)>, usize>,
     fns: Vec<FnDef>,
@@ -57,15 +100,42 @@ struct CodeGen<'a, 'b> {
     reg_ctype: HashMap<RegId, String>,
 }
 
+#[derive(Clone, Copy)]
+enum ReturnStyle {
+    LegacyMain,
+    Function,
+}
+
 impl<'a, 'b> CodeGen<'a, 'b> {
     fn new(solver: &'a Solver<'b>) -> Self {
+        Self::with_prefix(solver, String::new())
+    }
+
+    fn with_prefix(solver: &'a Solver<'b>, name_prefix: String) -> Self {
         Self {
             solver,
+            name_prefix,
             structs: Vec::new(),
             struct_index: HashMap::new(),
             fns: Vec::new(),
             fn_index: HashMap::new(),
             reg_ctype: HashMap::new(),
+        }
+    }
+
+    fn struct_name(&self, id: usize) -> String {
+        if self.name_prefix.is_empty() {
+            format!("R{}", id)
+        } else {
+            format!("R_{}{}", self.name_prefix, id)
+        }
+    }
+
+    fn fn_name(&self, id: usize) -> String {
+        if self.name_prefix.is_empty() {
+            format!("fn{}", id)
+        } else {
+            format!("fn_{}{}", self.name_prefix, id)
         }
     }
 
@@ -85,7 +155,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 }
                 let closed_from = row.tail.map(|tv| format!("{}", tv));
                 let id = self.intern_struct(fields, closed_from);
-                Ok(format!("struct R{} *", id))
+                Ok(format!("struct {} *", self.struct_name(id)))
             }
             Type::Func(ft) => {
                 let mut params = Vec::with_capacity(ft.params.len());
@@ -94,7 +164,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 }
                 let ret = self.lower(&ft.ret)?;
                 let id = self.intern_fn(params, ret);
-                Ok(format!("fn{}", id))
+                Ok(self.fn_name(id))
             }
             Type::Unknown(tv) => Err(CodegenError::UnresolvedType(format!("{}", tv))),
             Type::Interface(_) => Err(CodegenError::Unsupported("interface".to_string())),
@@ -167,45 +237,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         out.push_str("#include <stdio.h>\n");
         out.push_str("#include <stdlib.h>\n\n");
 
-        // Forward-declare every struct tag so typedefs and struct fields can
-        // refer to any struct regardless of emission order.
-        if !self.structs.is_empty() {
-            for s in &self.structs {
-                writeln!(out, "struct R{};", s.id).unwrap();
-            }
-            out.push('\n');
-        }
-
-        // Function-pointer typedefs (before struct defs, which may use them).
-        for fd in &self.fns {
-            writeln!(
-                out,
-                "typedef {} (*fn{})({});",
-                fd.ret,
-                fd.id,
-                if fd.params.is_empty() {
-                    "void".to_string()
-                } else {
-                    fd.params.join(", ")
-                }
-            )
-            .unwrap();
-        }
-        if !self.fns.is_empty() {
-            out.push('\n');
-        }
-
-        // Struct definitions.
-        for s in &self.structs {
-            writeln!(out, "struct R{} {{", s.id).unwrap();
-            for (name, cty) in &s.fields {
-                writeln!(out, "    {} {};", cty, name).unwrap();
-            }
-            if let Some(tail) = &s.closed_from {
-                writeln!(out, "    /* row closed from {} at codegen */", tail).unwrap();
-            }
-            out.push_str("};\n\n");
-        }
+        self.emit_supporting_type_defs(&mut out);
 
         // Prelude runtime functions (return their argument — the type algebra
         // has no unit type). Emit only the ones the program actually loads, so
@@ -229,7 +261,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         }
 
         // Extern prototypes for LoadFunc names not defined by the prelude.
-        self.emit_externs(body, &mut out)?;
+        self.emit_externs(body, &mut out, &HashSet::new())?;
 
         // Registers referenced as operands somewhere — a defined register that
         // is never an operand is dead and must not be declared (it would warn
@@ -239,7 +271,14 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         out.push_str("int main(void) {\n");
         let mut saw_ret = false;
         for instr in body {
-            self.emit_instr(instr, &mut out, &used, &mut saw_ret)?;
+            self.emit_instr(
+                instr,
+                &mut out,
+                &used,
+                &mut saw_ret,
+                ReturnStyle::LegacyMain,
+                &HashMap::new(),
+            )?;
         }
         if !saw_ret {
             out.push_str("    return 0;\n");
@@ -249,11 +288,131 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         Ok(out)
     }
 
-    fn emit_externs(&self, body: &[Instr], out: &mut String) -> Result<(), CodegenError> {
+    fn emit_supporting_type_defs(&self, out: &mut String) {
+        // Forward-declare every struct tag so typedefs and struct fields can
+        // refer to any struct regardless of emission order.
+        if !self.structs.is_empty() {
+            for s in &self.structs {
+                writeln!(out, "struct {};", self.struct_name(s.id)).unwrap();
+            }
+            out.push('\n');
+        }
+
+        // Function-pointer typedefs (before struct defs, which may use them).
+        for fd in &self.fns {
+            writeln!(
+                out,
+                "typedef {} (*{})({});",
+                fd.ret,
+                self.fn_name(fd.id),
+                if fd.params.is_empty() {
+                    "void".to_string()
+                } else {
+                    fd.params.join(", ")
+                }
+            )
+            .unwrap();
+        }
+        if !self.fns.is_empty() {
+            out.push('\n');
+        }
+
+        for s in &self.structs {
+            writeln!(out, "struct {} {{", self.struct_name(s.id)).unwrap();
+            for (name, cty) in &s.fields {
+                writeln!(out, "    {} {};", cty, name).unwrap();
+            }
+            if let Some(tail) = &s.closed_from {
+                writeln!(out, "    /* row closed from {} at codegen */", tail).unwrap();
+            }
+            out.push_str("};\n\n");
+        }
+    }
+
+    fn emit_function_definition(
+        &self,
+        function_name: &str,
+        ret_ctype: &str,
+        param_ctypes: &[String],
+        registers: &RegisterFile,
+        body: &[Instr],
+        internal_funcs: &HashSet<String>,
+        internal_func_symbols: &HashMap<String, String>,
+    ) -> Result<String, CodegenError> {
+        let mut out = String::new();
+        self.emit_externs(body, &mut out, internal_funcs)?;
+
+        let param_regs: Vec<_> = registers.iter().take(param_ctypes.len()).collect();
+        if param_regs.len() != param_ctypes.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "function {} expects {} parameters but only {} registers exist for parameter binding",
+                function_name,
+                param_ctypes.len(),
+                param_regs.len()
+            )));
+        }
+
+        let params = if param_ctypes.is_empty() {
+            "void".to_string()
+        } else {
+            param_ctypes
+                .iter()
+                .zip(param_regs.iter())
+                .map(|(ty, reg)| format!("{} {}", ty, reg))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        writeln!(out, "static {} {}({}) {{", ret_ctype, function_name, params).unwrap();
+
+        let used = used_registers(body);
+        let dst_ids: HashSet<RegId> = body
+            .iter()
+            .filter_map(|instr| instr.dst().map(|r| r.id))
+            .collect();
+
+        for reg in &param_regs {
+            if dst_ids.contains(&reg.id) {
+                return Err(CodegenError::Unsupported(format!(
+                    "parameter register {} is reassigned in function {}; reserve the first {} register(s) for parameters only",
+                    reg,
+                    function_name,
+                    param_ctypes.len()
+                )));
+            }
+        }
+
+        let mut saw_ret = false;
+        for instr in body {
+            self.emit_instr(
+                instr,
+                &mut out,
+                &used,
+                &mut saw_ret,
+                ReturnStyle::Function,
+                internal_func_symbols,
+            )?;
+        }
+        if !saw_ret {
+            writeln!(out, "    return {};", default_return_literal(ret_ctype)).unwrap();
+        }
+        out.push_str("}\n\n");
+        Ok(out)
+    }
+
+    fn emit_externs(
+        &self,
+        body: &[Instr],
+        out: &mut String,
+        internal_funcs: &HashSet<String>,
+    ) -> Result<(), CodegenError> {
         let mut seen: Vec<&str> = Vec::new();
         for instr in body {
             if let Instr::LoadFunc { name, sig, .. } = instr {
-                if PRELUDE_FUNCS.contains(&name.as_str()) || seen.contains(&name.as_str()) {
+                if PRELUDE_FUNCS.contains(&name.as_str())
+                    || internal_funcs.contains(name)
+                    || seen.contains(&name.as_str())
+                {
                     continue;
                 }
                 seen.push(name);
@@ -291,7 +450,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                     fields.push((name.clone(), self.lower_readonly(fty)?));
                 }
                 match self.struct_index.get(&fields) {
-                    Some(id) => Ok(format!("struct R{} *", id)),
+                    Some(id) => Ok(format!("struct {} *", self.struct_name(*id))),
                     None => Err(CodegenError::Unsupported(format!(
                         "record shape {:?} was not interned",
                         fields
@@ -305,7 +464,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 }
                 let ret = self.lower_readonly(&ft.ret)?;
                 match self.fn_index.get(&(params.clone(), ret.clone())) {
-                    Some(id) => Ok(format!("fn{}", id)),
+                    Some(id) => Ok(self.fn_name(*id)),
                     None => Err(CodegenError::Unsupported(
                         "function signature was not interned".to_string(),
                     )),
@@ -324,6 +483,8 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         out: &mut String,
         used: &std::collections::HashSet<RegId>,
         saw_ret: &mut bool,
+        return_style: ReturnStyle,
+        internal_func_symbols: &HashMap<String, String>,
     ) -> Result<(), CodegenError> {
         if let Some(dst) = instr.dst() {
             let _ = writeln!(
@@ -384,7 +545,11 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 .unwrap();
             }
             Instr::LoadFunc { dst, name, .. } => {
-                writeln!(out, "    {} {} = {};", self.ctype(dst.id), dst, name).unwrap();
+                let lowered = internal_func_symbols
+                    .get(name)
+                    .map(String::as_str)
+                    .unwrap_or(name);
+                writeln!(out, "    {} {} = {};", self.ctype(dst.id), dst, lowered).unwrap();
             }
             Instr::Call { func, args, ret } => {
                 let args: Vec<String> = args.iter().map(|r| format!("{}", r)).collect();
@@ -404,12 +569,30 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 }
             }
             Instr::Ret { src } => {
-                writeln!(out, "    printf(\"result: %lld\\n\", (long long){});", src).unwrap();
-                writeln!(out, "    return (int){};", src).unwrap();
+                match return_style {
+                    ReturnStyle::LegacyMain => {
+                        writeln!(out, "    printf(\"result: %lld\\n\", (long long){});", src)
+                            .unwrap();
+                        writeln!(out, "    return (int){};", src).unwrap();
+                    }
+                    ReturnStyle::Function => {
+                        writeln!(out, "    return {};", src).unwrap();
+                    }
+                }
                 *saw_ret = true;
             }
         }
         Ok(())
+    }
+}
+
+fn default_return_literal(ret_ctype: &str) -> &'static str {
+    if ret_ctype == "bool" {
+        "false"
+    } else if ret_ctype.ends_with('*') {
+        "NULL"
+    } else {
+        "0"
     }
 }
 
@@ -425,6 +608,212 @@ pub fn emit_c(
     let mut cg = CodeGen::new(solver);
     cg.ground_registers(registers)?;
     cg.emit(body)
+}
+
+fn solve_function<'a>(
+    function: &IRFunction,
+    tvg: &'a mut crate::variables::TypeVarGenerator,
+) -> Result<Solver<'a>, TypeError> {
+    let mut solver = Solver::new(tvg);
+    let mut constraints = Vec::new();
+
+    let param_regs: Vec<_> = function
+        .registers
+        .iter()
+        .take(function.signature.params.len())
+        .collect();
+    for (reg, param_ty) in param_regs.into_iter().zip(function.signature.params.iter()) {
+        constraints.push(crate::constraints::Constraint::Equal(
+            reg.ty(),
+            param_ty.clone(),
+        ));
+    }
+
+    for instr in &function.body {
+        constraints.extend(solver.generate_constraints(instr));
+    }
+    solver.solve(&constraints)?;
+    Ok(solver)
+}
+
+fn sanitize_ident(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for (i, ch) in s.chars().enumerate() {
+        let ok = ch.is_ascii_alphanumeric() || ch == '_';
+        if ok {
+            if i == 0 && ch.is_ascii_digit() {
+                out.push('_');
+            }
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
+}
+
+/// Emit a full C translation unit for an IR program with multiple internal
+/// function definitions and an explicit entry function.
+///
+pub fn emit_c_program(program: &IRProgram) -> Result<String, ProgramCodegenError> {
+    let mut seen_names = HashSet::new();
+    for function in &program.functions {
+        if !seen_names.insert(function.name.clone()) {
+            return Err(ProgramCodegenError::DuplicateFunction(
+                function.name.clone(),
+            ));
+        }
+    }
+
+    if !seen_names.contains(&program.entry) {
+        return Err(ProgramCodegenError::MissingEntry(program.entry.clone()));
+    }
+
+    let entry_function = program
+        .function(&program.entry)
+        .expect("entry was validated to exist");
+    if !entry_function.signature.params.is_empty() {
+        return Err(ProgramCodegenError::Unsupported(format!(
+            "entry function {:?} has {} params; main wrapper currently supports zero-arg entry only",
+            entry_function.name,
+            entry_function.signature.params.len()
+        )));
+    }
+
+    let internal_funcs: HashSet<String> =
+        program.functions.iter().map(|f| f.name.clone()).collect();
+    let mut symbol_map: HashMap<String, String> = HashMap::new();
+    let mut used_symbols = HashSet::new();
+    for function in &program.functions {
+        let base = format!("ir_{}", sanitize_ident(&function.name));
+        let mut candidate = base.clone();
+        let mut suffix = 1_u32;
+        while used_symbols.contains(&candidate) {
+            candidate = format!("{}_{}", base, suffix);
+            suffix += 1;
+        }
+        used_symbols.insert(candidate.clone());
+        symbol_map.insert(function.name.clone(), candidate);
+    }
+
+    let mut ret_types: HashMap<String, String> = HashMap::new();
+    let mut param_types: HashMap<String, Vec<String>> = HashMap::new();
+
+    // First pass: solve each function to establish its concrete C return type.
+    for function in &program.functions {
+        let mut tvg = type_var_generator_for_function(function);
+        let solver = solve_function(function, &mut tvg)?;
+        let mut cg = CodeGen::with_prefix(&solver, format!("{}_", sanitize_ident(&function.name)));
+        cg.ground_registers(&function.registers)?;
+
+        let mut lowered_params = Vec::with_capacity(function.signature.params.len());
+        for param in &function.signature.params {
+            let param_ty = solver.apply(param.clone());
+            lowered_params.push(cg.lower(&param_ty)?);
+        }
+
+        let ret_ty = solver.apply((*function.signature.ret).clone());
+        let ret_ctype = cg.lower(&ret_ty)?;
+        ret_types.insert(function.name.clone(), ret_ctype);
+        param_types.insert(function.name.clone(), lowered_params);
+    }
+
+    let mut out = String::new();
+    out.push_str("#include <stdint.h>\n");
+    out.push_str("#include <stdbool.h>\n");
+    out.push_str("#include <stdio.h>\n");
+    out.push_str("#include <stdlib.h>\n\n");
+
+    // Internal function prototypes so `LoadFunc` can reference in-program defs
+    // regardless of definition order.
+    for function in &program.functions {
+        let ret = ret_types
+            .get(&function.name)
+            .expect("first pass produced return type");
+        let c_name = symbol_map
+            .get(&function.name)
+            .expect("symbol map contains every function");
+        let params = param_types
+            .get(&function.name)
+            .expect("first pass produced parameter types");
+        let params = if params.is_empty() {
+            "void".to_string()
+        } else {
+            params.join(", ")
+        };
+        writeln!(out, "static {} {}({});", ret, c_name, params).unwrap();
+    }
+    out.push('\n');
+
+    let loaded_all: HashSet<String> = program
+        .functions
+        .iter()
+        .flat_map(|f| loaded_func_names(&f.body).into_iter())
+        .collect();
+
+    let mut emitted_prelude = false;
+    if loaded_all.contains("print_int") {
+        out.push_str(
+            "static int64_t print_int(int64_t x) { printf(\"%lld\\n\", (long long)x); return x; }\n",
+        );
+        emitted_prelude = true;
+    }
+    if loaded_all.contains("print_bool") {
+        out.push_str(
+            "static bool print_bool(bool x) { printf(\"%s\\n\", x ? \"true\" : \"false\"); return x; }\n",
+        );
+        emitted_prelude = true;
+    }
+    if emitted_prelude {
+        out.push('\n');
+    }
+
+    for function in &program.functions {
+        let mut tvg = type_var_generator_for_function(function);
+        let solver = solve_function(function, &mut tvg)?;
+        let mut cg = CodeGen::with_prefix(&solver, format!("{}_", sanitize_ident(&function.name)));
+        cg.ground_registers(&function.registers)?;
+        cg.emit_supporting_type_defs(&mut out);
+        let ret_ctype = ret_types
+            .get(&function.name)
+            .expect("first pass produced return type");
+        let param_ctypes = param_types
+            .get(&function.name)
+            .expect("first pass produced parameter types");
+        let c_name = symbol_map
+            .get(&function.name)
+            .expect("symbol map contains every function");
+        out.push_str(&cg.emit_function_definition(
+            c_name,
+            ret_ctype,
+            param_ctypes,
+            &function.registers,
+            &function.body,
+            &internal_funcs,
+            &symbol_map,
+        )?);
+    }
+
+    let entry_ret = ret_types
+        .get(&program.entry)
+        .expect("entry function return type was computed");
+    let entry_name = symbol_map
+        .get(&program.entry)
+        .expect("entry function symbol exists");
+    writeln!(out, "int main(void) {{").unwrap();
+    writeln!(out, "    {} result = {}();", entry_ret, entry_name).unwrap();
+    if entry_ret == "int64_t" {
+        out.push_str("    printf(\"result: %lld\\n\", (long long)result);\n");
+    } else if entry_ret == "bool" {
+        out.push_str("    printf(\"result: %s\\n\", result ? \"true\" : \"false\");\n");
+    }
+    out.push_str("    return 0;\n");
+    out.push_str("}\n");
+
+    Ok(out)
 }
 
 /// Registers that appear as an *operand* of some instruction. A register that
@@ -480,7 +869,7 @@ mod tests {
     use crate::constraints::Constraint;
     use crate::instructions::BinOpKind;
     use crate::types::{Row, Type};
-    use crate::{IRBuilder, Solver};
+    use crate::{IRBuilder, IRProgram, Solver};
     use std::collections::BTreeMap;
 
     /// Solve the builder's body and emit C, mirroring the real pipeline.
@@ -598,6 +987,81 @@ mod tests {
 
         let err = emit(&mut b).expect_err("unresolved type must error");
         assert!(matches!(err, CodegenError::UnresolvedType(_)));
+    }
+
+    #[test]
+    fn program_emits_internal_function_without_extern() {
+        let mut helper = IRBuilder::default();
+        let forty = helper.const_int(40);
+        let two = helper.const_int(2);
+        let sum = helper.binop(BinOpKind::Add, forty, two);
+        helper.ret(sum);
+        let helper_fn = helper.finish("helper", vec![], Type::Int);
+
+        let mut entry = IRBuilder::default();
+        let f = entry.func("helper", vec![], Type::Int);
+        let result = entry.call(f, vec![]);
+        entry.ret(result);
+        let entry_fn = entry.finish("main", vec![], Type::Int);
+
+        let mut program = IRProgram::new("main");
+        program.add_function(helper_fn);
+        program.add_function(entry_fn);
+
+        let c = emit_c_program(&program).expect("program should emit");
+
+        assert!(c.contains("static int64_t ir_helper(void);"), "{}", c);
+        assert!(c.contains("static int64_t ir_main(void);"), "{}", c);
+        assert!(c.contains("int main(void)"), "{}", c);
+        assert!(
+            !c.contains("extern int64_t helper(void);"),
+            "internal function must not be extern:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn program_emits_internal_function_with_parameters() {
+        let mut helper = IRBuilder::default();
+        let arg = helper.param(0);
+        let forty = helper.const_int(40);
+        let two = helper.const_int(2);
+        let partial = helper.binop(BinOpKind::Add, arg, forty);
+        let total = helper.binop(BinOpKind::Add, partial, two);
+        helper.ret(total);
+        let helper_fn = helper.finish("helper", vec![Type::Int], Type::Int);
+
+        let mut entry = IRBuilder::default();
+        let n = entry.const_int(123);
+        let f = entry.func("helper", vec![Type::Int], Type::Int);
+        let result = entry.call(f, vec![n]);
+        entry.ret(result);
+        let entry_fn = entry.finish("main", vec![], Type::Int);
+
+        let mut program = IRProgram::new("main");
+        program.add_function(helper_fn);
+        program.add_function(entry_fn);
+
+        let c = emit_c_program(&program).expect("program should emit");
+
+        assert!(c.contains("static int64_t ir_helper(int64_t);"), "{}", c);
+        assert!(c.contains("static int64_t ir_helper(int64_t reg0)"), "{}", c);
+        assert!(c.contains("fn_main_0 reg1 = ir_helper;"), "{}", c);
+        assert!(c.contains("int64_t reg2 = reg1(reg0);"), "{}", c);
+    }
+
+    #[test]
+    fn program_requires_existing_entry_function() {
+        let mut b = IRBuilder::default();
+        let n = b.const_int(1);
+        b.ret(n);
+        let f = b.finish("other", vec![], Type::Int);
+
+        let mut program = IRProgram::new("main");
+        program.add_function(f);
+
+        let err = emit_c_program(&program).expect_err("missing entry must fail");
+        assert!(matches!(err, ProgramCodegenError::MissingEntry(_)));
     }
 
     #[test]

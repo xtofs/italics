@@ -23,6 +23,10 @@ pub struct TypeVarGenerator {
 }
 
 impl TypeVarGenerator {
+    pub fn new(next: u32, next_row: u32) -> Self {
+        Self { next, next_row }
+    }
+
     // pub fn new() -> Self {
     //     Self {
     //         next: 0,

@@ -1,75 +1,74 @@
 use std::fs;
 use std::path::Path;
 
-use italics::instructions::BinOpKind;
 use italics::*;
 
-/// End-to-end demonstration: build a small IR program, infer its types, and
-/// emit runnable C. The headline observable is that the generated `struct R0`
-/// contains the fields `y` and `z` — neither of which appears in the `new { x }`
-/// literal. They are added purely by inference (row-tail extension) from the
-/// later `store`/`load` instructions, and show up in the physical struct layout.
+#[macro_use]
+#[path = "codegen/cmd.rs"]
+mod cmd;
+
+/// Demonstrate program-level codegen with internal IR functions.
+///
+/// This example focuses on `IRFunction`, `IRProgram`, and `emit_c_program`.
 fn main() {
-    let mut b = IRBuilder::default();
+    let helper = build_helper();
+    let entry = build_entry();
 
-    // n = 42
-    let n = b.const_int(42);
-    // obj = { x: n }            — struct starts as { x }
-    let obj = b.new_obj(vec![("x", n)]);
-    // store obj.y = n           — row extension: struct R0 gains `y`
-    b.store(obj, "y", n);
-    // y = load obj.y            — reads the extension-created field back
-    let y = b.load(obj, "y");
-    // one = 1
-    let one = b.const_int(6);
-    // sum = y + one             — forces y : int; sum = 43
-    let sum = b.binop(BinOpKind::Add, y, one);
-    // f = @print_int : (int) → int   — runtime fn, signature as constraint
-    let f = b.func("print_int", vec![Type::Int], Type::Int);
-    // call f(sum)               — prints 43
-    let _ = b.call(f, vec![sum]);
-    // store obj.z = sum         — row extension again: struct R0 gains `z`
-    b.store(obj, "z", sum);
-    // ret sum
-    b.ret(sum);
+    let mut program = IRProgram::new("entry");
+    program.add_function(helper);
+    program.add_function(entry);
 
-    println!("Body:");
-    for i in &b.body {
-        println!("    {}", i);
-    }
+    let c = emit_c_program(&program).expect("program codegen should succeed");
 
-    let body = b.body.clone();
-    let mut solver = Solver::new(&mut b.type_variable_generator);
-
-    let mut constraints = Vec::new();
-    for instr in &body {
-        constraints.extend(solver.generate_constraints(instr));
-    }
-
-    println!("\nConstraints:");
-    for c in &constraints {
-        println!("    {}", c);
-    }
-
-    solver
-        .solve(&constraints)
-        .expect("program should type-check");
-
-    println!("\nInferred register types:");
-    for reg in b.register_file.iter() {
-        println!("    {}: {}", reg, solver.apply(reg.ty()));
-    }
-
-    let c = emit_c(&body, &b.register_file, &solver).expect("codegen should succeed");
-
-    println!("\nGenerated C:\n");
-    println!("{}", c);
-
-    // Write it out so the verification step can compile and run it.
+    println!("Generated C for program with internal calls:\n");
     let target = Path::new("target");
     if target.is_dir() {
-        let out = target.join("generated.c");
-        fs::write(&out, &c).expect("write generated.c");
-        println!("(written to {})", out.display());
+        let c_file = target.join("generated_program.c");
+        let binary_file = target.join("generated_program");
+        fs::write(&c_file, &c).expect("write generated_program.c");
+        println!("written to {}", c_file.display());
+        println!("");
+
+        let _ = run_cmd!(
+            "cc",
+            "-Wall",
+            c_file.into_os_string(),
+            "-o",
+            binary_file.clone().into_os_string(),
+        )
+        .expect("failed to execute process");
+
+        let _ = run_cmd!(binary_file.as_os_str()).expect("failed to execute process");
+    } else {
+        println!("{}", c);
     }
+}
+
+fn build_helper() -> IRFunction {
+    let mut b = IRBuilder::default();
+
+    // Reserve and use the first parameter register (reg0).
+    let input = b.param(0);
+    let forty = b.const_int(40);
+    let two = b.const_int(2);
+    let partial = b.binop(italics::instructions::BinOpKind::Add, input, forty);
+    let result = b.binop(italics::instructions::BinOpKind::Add, partial, two);
+    b.ret(result);
+
+    b.finish("helper", vec![Type::Int], Type::Int)
+}
+
+fn build_entry() -> IRFunction {
+    let mut b = IRBuilder::default();
+
+    let arg = b.const_int(10);
+    let helper_fn = b.func("helper", vec![Type::Int], Type::Int);
+    let value = b.call(helper_fn, vec![arg]);
+
+    let print_int_fn = b.func("print_int", vec![Type::Int], Type::Int);
+    let _ = b.call(print_int_fn, vec![value]);
+
+    b.ret(value);
+
+    b.finish("entry", vec![], Type::Int)
 }

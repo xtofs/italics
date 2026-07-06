@@ -38,7 +38,7 @@ impl fmt::Display for Constraint {
             Constraint::RowFieldType(r, f, t) => {
                 write!(
                     fmt,
-                    "{}: {} {} {}",
+                    "{}:{} {} {}",
                     f,
                     t,
                     symbol(Symbol::RowMembershipOperator),
