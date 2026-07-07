@@ -9,8 +9,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
-use crate::builder::IRBuilder;
-use crate::codegen::{CodegenError, ProgramCodegenError, emit_c, emit_c_program};
+use crate::builder::InstructionBuilder;
+use crate::codegen::{CodegenError, ProgramCodegenError, emit_c, emit_code};
 use crate::instructions::Instr;
 use crate::program::IRProgram;
 use crate::registers::RegisterFile;
@@ -103,18 +103,16 @@ impl<'a> CBuild<'a> {
 
     /// Build from a whole [`IRProgram`] (solved internally per function).
     pub fn from_program(name: impl Into<String>, program: &'a IRProgram) -> Self {
-        Self::with_generator(name, move || {
-            emit_c_program(program).map_err(BuildError::from)
-        })
+        Self::with_generator(name, move || emit_code(program).map_err(BuildError::from))
     }
 
-    /// Build from an [`IRBuilder`], running the whole constraint-generation,
+    /// Build from an [`InstructionBuilder`], running the whole constraint-generation,
     /// solve, and lowering pipeline internally. This is the straight-line
     /// counterpart to [`from_program`](Self::from_program) for callers that just
     /// want C out of an IR body without driving the solver themselves.
     pub fn from_builder(
         name: impl Into<String>,
-        mut builder: IRBuilder,
+        mut builder: InstructionBuilder,
     ) -> Result<CBuild<'static>, BuildError> {
         let body = builder.body.clone();
         let mut solver = Solver::new(&mut builder.type_variable_generator);
@@ -226,12 +224,12 @@ fn run(binary: &Path) -> Result<RunReport, BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::IRBuilder;
+    use crate::InstructionBuilder;
     use crate::solver::Solver;
 
     /// Build the classic demo: `sum = (n:=42) + 1`, returned as the result.
-    fn demo() -> IRBuilder {
-        let mut b = IRBuilder::default();
+    fn demo() -> InstructionBuilder {
+        let mut b = InstructionBuilder::default();
         let n = b.const_int(42);
         let one = b.const_int(1);
         let sum = b.binop(crate::instructions::BinOpKind::Add, n, one);

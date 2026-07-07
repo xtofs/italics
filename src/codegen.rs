@@ -19,6 +19,7 @@ const PREAMBLE: &str = "\
 #include <stdlib.h>
 
 typedef struct { char _; } unit_t;
+#define UNIT (unit_t){0}
 
 ";
 
@@ -591,7 +592,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 let lit = match value {
                     crate::instructions::Value::Int(v) => v.to_string(),
                     crate::instructions::Value::Bool(v) => v.to_string(),
-                    crate::instructions::Value::Unit => "(unit_t){0}".to_string(),
+                    crate::instructions::Value::Unit => "UNIT".to_string(),
                 };
                 writeln!(out, "{} {} = {};", self.ctype(dst.id), dst, lit).unwrap();
             }
@@ -736,7 +737,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                     // yields unit (the function's return type is `unit_t`).
                     ReturnStyle::Function => match src {
                         Some(r) => writeln!(out, "return {};", r).unwrap(),
-                        None => writeln!(out, "return (unit_t){{0}};").unwrap(),
+                        None => writeln!(out, "return UNIT;").unwrap(),
                     },
                 }
                 *saw_ret = true;
@@ -750,7 +751,7 @@ fn default_return_literal(ret_ctype: &str) -> &'static str {
     if ret_ctype == "bool" {
         "false"
     } else if ret_ctype == "unit_t" {
-        "(unit_t){0}"
+        "UNIT"
     } else if ret_ctype.ends_with('*') {
         "NULL"
     } else {
@@ -837,7 +838,7 @@ fn sanitize_ident(s: &str) -> String {
 /// Emit a full C translation unit for an IR program with multiple internal
 /// function definitions and an explicit entry function.
 ///
-pub fn emit_c_program(program: &IRProgram) -> Result<String, ProgramCodegenError> {
+pub fn emit_code(program: &IRProgram) -> Result<String, ProgramCodegenError> {
     let mut seen_names = HashSet::new();
     for function in &program.functions {
         if !seen_names.insert(function.name.clone()) {
@@ -1023,7 +1024,7 @@ fn emit_prelude(loaded: &HashSet<String>, out: &mut String) {
     let mut any = false;
     for f in crate::prelude::PRELUDE {
         if loaded.contains(f.name) {
-            out.push_str(f.c_def);
+            out.push_str(f.code);
             out.push('\n');
             any = true;
         }
@@ -1039,15 +1040,18 @@ mod tests {
     use crate::constraints::Constraint;
     use crate::instructions::BinOpKind;
     use crate::types::{Row, Type};
-    use crate::{CBuild, IRBuilder, IRProgram, Solver};
+    use crate::{CBuild, FunctionBuilder, IRProgram, InstructionBuilder, Solver};
     use std::collections::BTreeMap;
 
     /// Solve the builder's body and emit C, mirroring the real pipeline.
-    fn emit(builder: &mut IRBuilder) -> Result<String, CodegenError> {
+    fn emit(builder: &mut InstructionBuilder) -> Result<String, CodegenError> {
         emit_with(builder, Vec::new())
     }
 
-    fn emit_with(builder: &mut IRBuilder, extra: Vec<Constraint>) -> Result<String, CodegenError> {
+    fn emit_with(
+        builder: &mut InstructionBuilder,
+        extra: Vec<Constraint>,
+    ) -> Result<String, CodegenError> {
         let body = builder.body.clone();
         let registers = std::mem::take(&mut builder.register_file);
         let mut solver = Solver::new(&mut builder.type_variable_generator);
@@ -1068,7 +1072,7 @@ mod tests {
     fn row_extended_field_reaches_struct() {
         // new { x } then store obj.y — the struct must contain both x and y,
         // though y was never part of the NewObj literal.
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let n = b.const_int(1);
         let obj = b.new_obj(vec![("x", n)]);
         let m = b.const_int(2);
@@ -1089,7 +1093,7 @@ mod tests {
 
     #[test]
     fn structural_dedup_shares_one_struct() {
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let a = b.const_int(1);
         let c1 = b.const_int(2);
         let _o1 = b.new_obj(vec![("x", a)]);
@@ -1114,7 +1118,7 @@ mod tests {
     fn loadfunc_signature_drives_inference() {
         // print_int : (int) -> unit applied to a loaded field forces that
         // field (and register) to int.
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let n = b.const_int(7);
         let obj = b.new_obj(vec![("x", n)]);
         let x = b.load(obj, "x");
@@ -1135,7 +1139,7 @@ mod tests {
 
     #[test]
     fn unknown_loadfunc_gets_extern() {
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let n = b.const_int(3);
         let f = b.func("triple", vec![Type::Int], Type::Int);
         let r = b.call(f, vec![n]);
@@ -1152,7 +1156,7 @@ mod tests {
     #[test]
     fn unresolved_type_is_an_error() {
         // A register whose type is never constrained cannot be lowered.
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let _dangling = b.reg();
 
         let err = emit(&mut b).expect_err("unresolved type must error");
@@ -1161,14 +1165,14 @@ mod tests {
 
     #[test]
     fn program_emits_internal_function_without_extern() {
-        let mut helper = IRBuilder::default();
+        let mut helper = InstructionBuilder::default();
         let forty = helper.const_int(40);
         let two = helper.const_int(2);
         let sum = helper.binop(BinOpKind::Add, forty, two);
         helper.ret(sum);
         let helper_fn = helper.finish("helper", vec![], Type::Int);
 
-        let mut entry = IRBuilder::default();
+        let mut entry = InstructionBuilder::default();
         let f = entry.func("helper", vec![], Type::Int);
         let result = entry.call(f, vec![]);
         entry.ret(result);
@@ -1178,7 +1182,7 @@ mod tests {
         program.add_function(helper_fn);
         program.add_function(entry_fn);
 
-        let c = emit_c_program(&program).expect("program should emit");
+        let c = emit_code(&program).expect("program should emit");
 
         assert!(c.contains("static int64_t helper(void);"), "{}", c);
         // The entry function is named `main` in the IR; `main` is reserved for
@@ -1194,16 +1198,16 @@ mod tests {
 
     #[test]
     fn program_emits_internal_function_with_parameters() {
-        let mut helper = IRBuilder::default();
+        let mut helper = FunctionBuilder::new("helper", [Type::Int], Type::Int);
         let arg = helper.param(0);
         let forty = helper.const_int(40);
         let two = helper.const_int(2);
         let partial = helper.binop(BinOpKind::Add, arg, forty);
         let total = helper.binop(BinOpKind::Add, partial, two);
         helper.ret(total);
-        let helper_fn = helper.finish("helper", vec![Type::Int], Type::Int);
+        let helper_fn = helper.build();
 
-        let mut entry = IRBuilder::default();
+        let mut entry = InstructionBuilder::default();
         let n = entry.const_int(123);
         let f = entry.func("helper", vec![Type::Int], Type::Int);
         let result = entry.call(f, vec![n]);
@@ -1214,7 +1218,7 @@ mod tests {
         program.add_function(helper_fn);
         program.add_function(entry_fn);
 
-        let c = emit_c_program(&program).expect("program should emit");
+        let c = emit_code(&program).expect("program should emit");
 
         assert!(c.contains("static int64_t helper(int64_t);"), "{}", c);
         assert!(c.contains("static int64_t helper(int64_t reg0)"), "{}", c);
@@ -1224,7 +1228,7 @@ mod tests {
 
     #[test]
     fn program_requires_existing_entry_function() {
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let n = b.const_int(1);
         b.ret(n);
         let f = b.finish("other", vec![], Type::Int);
@@ -1232,14 +1236,14 @@ mod tests {
         let mut program = IRProgram::new("main");
         program.add_function(f);
 
-        let err = emit_c_program(&program).expect_err("missing entry must fail");
+        let err = emit_code(&program).expect_err("missing entry must fail");
         assert!(matches!(err, ProgramCodegenError::MissingEntry(_)));
     }
 
     #[test]
     fn unit_returning_functions() {
         // greet(): a side effect, then a valueless `ret` (returns unit).
-        let mut greet = IRBuilder::default();
+        let mut greet = InstructionBuilder::default();
         let five = greet.const_int(5);
         let p = greet.prelude("print_int");
         let _ = greet.call(p, vec![five]);
@@ -1247,13 +1251,13 @@ mod tests {
         let greet_fn = greet.finish("greet", vec![], Type::Unit);
 
         // mk_unit(): returns a materialized unit constant.
-        let mut mk = IRBuilder::default();
+        let mut mk = InstructionBuilder::default();
         let u = mk.const_unit();
         mk.ret(u);
         let mk_fn = mk.finish("mk_unit", vec![], Type::Unit);
 
         // main(): call both (results dropped), return 0.
-        let mut entry = IRBuilder::default();
+        let mut entry = InstructionBuilder::default();
         let g = entry.func("greet", vec![], Type::Unit);
         let _ = entry.call(g, vec![]);
         let m = entry.func("mk_unit", vec![], Type::Unit);
@@ -1267,32 +1271,33 @@ mod tests {
         program.add_function(mk_fn);
         program.add_function(entry_fn);
 
-        let c = emit_c_program(&program).expect("program should emit");
+        let c = emit_code(&program).expect("program should emit");
 
         assert!(c.contains("static unit_t greet(void)"), "{}", c);
         assert!(c.contains("static unit_t mk_unit(void)"), "{}", c);
-        // both `ret_unit` and `const_unit` materialize the unit value
-        assert!(c.contains("(unit_t){0}"), "{}", c);
+        assert!(c.contains("#define UNIT (unit_t){0}"), "{}", c);
+        assert!(c.contains("return UNIT;"), "{}", c);
+        assert!(!c.contains("return (unit_t){0};"), "{}", c);
     }
 
     #[test]
     fn ret_unit_in_non_unit_function_is_rejected() {
         // A valueless `ret` requires a unit return type.
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         b.ret_unit();
         let f = b.finish("bad", vec![], Type::Int);
 
         let mut program = IRProgram::new("bad");
         program.add_function(f);
 
-        let err = emit_c_program(&program).expect_err("ret_unit in an int fn must fail");
+        let err = emit_code(&program).expect_err("ret_unit in an int fn must fail");
         assert!(matches!(err, ProgramCodegenError::Type(_)), "{:?}", err);
     }
 
     #[test]
     fn unsupported_type_is_an_error() {
         // Force a register to an interface type and confirm it is rejected.
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let r = b.reg();
         let iface = Type::Interface(Row {
             fields: BTreeMap::from([("x".to_string(), Type::Int)]),
@@ -1306,7 +1311,7 @@ mod tests {
 
     #[test]
     fn binop_lt_yields_bool() {
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let a = b.const_int(1);
         let c1 = b.const_int(2);
         let lt = b.binop(BinOpKind::Lt, a, c1);
@@ -1333,7 +1338,7 @@ mod tests {
     #[test]
     fn if_merges_branch_results() {
         // if true { 1 } else { 2 } — dst is a hoisted int assigned in both arms.
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let cond = b.const_bool(true);
         let dst = b.if_value(cond, |b| b.const_int(1), |b| b.const_int(2));
         b.ret(dst);
@@ -1362,7 +1367,7 @@ mod tests {
     #[test]
     fn for_accumulator() {
         // sum = for i in 0..10, acc = 0 { acc + i }
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let ten = b.const_int(10);
         let zero = b.const_int(0);
         let sum = b.for_acc(ten, zero, |b, index, acc| {
@@ -1391,7 +1396,7 @@ mod tests {
     fn for_invariant_mismatch_rejected() {
         // acc is seeded from an int but the body yields a bool — the checked
         // invariant Equal(acc, next) must make the solve fail.
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let ten = b.const_int(10);
         let zero = b.const_int(0);
         let _sum = b.for_acc(ten, zero, |b, _i, _acc| b.const_bool(true));
@@ -1412,7 +1417,7 @@ mod tests {
     fn loadfunc_inside_block_gets_extern() {
         // A runtime function loaded inside a loop body must still get its
         // prototype — guards the recursive walkers.
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let ten = b.const_int(10);
         let zero = b.const_int(0);
         let sum = b.for_acc(ten, zero, |b, index, acc| {
@@ -1432,7 +1437,7 @@ mod tests {
 
     #[test]
     fn ret_inside_block_is_unsupported() {
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let cond = b.const_bool(true);
         let dst = b.if_value(
             cond,
@@ -1452,7 +1457,7 @@ mod tests {
     #[test]
     fn if_generates_cond_and_merge_constraints() {
         // Equal(cond, Bool) + one Equal per branch const + two merge Equals.
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let cond = b.const_bool(true);
         let _dst = b.if_value(cond, |b| b.const_int(1), |b| b.const_int(2));
         let if_instr = b
@@ -1470,7 +1475,7 @@ mod tests {
     #[test]
     #[ignore = "requires a C compiler; run manually in verification"]
     fn compile_and_run_smoke() {
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let n = b.const_int(42);
         let obj = b.new_obj(vec![("x", n)]);
         b.store(obj, "y", n);

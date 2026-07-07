@@ -13,8 +13,8 @@ pub mod types;
 pub mod variables;
 
 pub use build::{BuildError, CBuild, RunReport};
-pub use builder::{FunctionBuilder, IRBuilder};
-pub use codegen::{CodegenError, ProgramCodegenError, emit_c, emit_c_program};
+pub use builder::{FunctionBuilder, InstructionBuilder};
+pub use codegen::{CodegenError, ProgramCodegenError, emit_c, emit_code};
 pub use constraints::Constraint;
 pub use instructions::Instr;
 pub use prelude::PreludeFn;

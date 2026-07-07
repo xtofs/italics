@@ -10,13 +10,16 @@ pub struct FunctionBuilder<const N: usize> {
     params: [Type; N],
     ret: Type,
     param_regs: [Reg; N],
-    ir: IRBuilder,
+    ir: InstructionBuilder,
 }
 
 impl<const N: usize> FunctionBuilder<N> {
     pub fn new(name: impl Into<String>, params: [Type; N], ret: Type) -> Self {
-        let mut ir = IRBuilder::default();
-        let param_regs = std::array::from_fn(|index| ir.param(index));
+        let mut ir = InstructionBuilder::default();
+        // Reserve the first `N` registers (`reg0..regN`) as the parameter
+        // registers — codegen binds parameters to exactly these. Done up front,
+        // before any body instructions, so the ids are predictable.
+        let param_regs = std::array::from_fn(|_| ir.reg());
 
         Self {
             name: name.into(),
@@ -41,125 +44,45 @@ impl<const N: usize> FunctionBuilder<N> {
         self.param_regs
     }
 
-    pub fn reg(&mut self) -> Reg {
-        self.ir.reg()
-    }
-
-    pub fn new_obj(&mut self, fields: Vec<(impl Into<String>, Reg)>) -> Reg {
-        self.ir.new_obj(fields)
-    }
-
-    pub fn load(&mut self, src: Reg, field: impl Into<String>) -> Reg {
-        self.ir.load(src, field)
-    }
-
-    pub fn store(&mut self, dst: Reg, field: impl Into<String>, src: Reg) {
-        self.ir.store(dst, field, src);
-    }
-
-    pub fn call(&mut self, func: Reg, args: Vec<Reg>) -> Reg {
-        self.ir.call(func, args)
-    }
-
-    pub fn const_int(&mut self, v: i64) -> Reg {
-        self.ir.const_int(v)
-    }
-
-    pub fn const_bool(&mut self, v: bool) -> Reg {
-        self.ir.const_bool(v)
-    }
-
-    pub fn const_unit(&mut self) -> Reg {
-        self.ir.const_unit()
-    }
-
-    pub fn binop(&mut self, op: BinOpKind, lhs: Reg, rhs: Reg) -> Reg {
-        self.ir.binop(op, lhs, rhs)
-    }
-
-    pub fn func(&mut self, name: impl Into<String>, params: Vec<Type>, ret: Type) -> Reg {
-        self.ir.func(name, params, ret)
-    }
-
-    pub fn prelude(&mut self, name: &str) -> Reg {
-        self.ir.prelude(name)
-    }
-
-    pub fn ret(&mut self, src: Reg) {
-        self.ir.ret(src);
-    }
-
-    pub fn ret_unit(&mut self) {
-        self.ir.ret_unit();
-    }
-
-    /// Value-producing conditional. Branch bodies are built against the inner
-    /// `IRBuilder` (parameters are already allocated, so a block body only needs
-    /// the value-building methods).
-    pub fn if_value(
-        &mut self,
-        cond: Reg,
-        then_f: impl FnOnce(&mut IRBuilder) -> Reg,
-        else_f: impl FnOnce(&mut IRBuilder) -> Reg,
-    ) -> Reg {
-        self.ir.if_value(cond, then_f, else_f)
-    }
-
-    /// Bounded loop with a loop-carried accumulator; see [`IRBuilder::for_acc`].
-    pub fn for_acc(
-        &mut self,
-        bound: Reg,
-        init: Reg,
-        body_f: impl FnOnce(&mut IRBuilder, Reg, Reg) -> Reg,
-    ) -> Reg {
-        self.ir.for_acc(bound, init, body_f)
-    }
-
     pub fn build(self) -> IRFunction {
         self.ir
             .finish(self.name, self.params.into_iter().collect(), self.ret)
     }
 }
 
+/// A `FunctionBuilder` is signature ceremony wrapped around an [`InstructionBuilder`]
+/// body: it adds typed, compile-time-arity parameters plus `build`, and reuses
+/// the entire IR-emitting surface via `Deref`. (`InstructionBuilder::finish` takes the
+/// builder by value, so it can't be reached through `Deref` — `build` is the
+/// only finalizer.)
+impl<const N: usize> std::ops::Deref for FunctionBuilder<N> {
+    type Target = InstructionBuilder;
+
+    fn deref(&self) -> &InstructionBuilder {
+        &self.ir
+    }
+}
+
+impl<const N: usize> std::ops::DerefMut for FunctionBuilder<N> {
+    fn deref_mut(&mut self) -> &mut InstructionBuilder {
+        &mut self.ir
+    }
+}
+
 #[derive(Debug, Default)]
-pub struct IRBuilder {
+pub struct InstructionBuilder {
     pub body: Vec<Instr>,
     pub register_file: RegisterFile,
     pub type_variable_generator: TypeVarGenerator,
     pub register_generator: RegGenerator,
-    pub max_param_index: Option<usize>,
 }
 
-impl IRBuilder {
-    // pub fn new() -> Self {
-    //     Self {
-    //         type_variable_generator: TypeVarGenerator::default(),
-    //         register_generator: RegGenerator::default(),
-    //         register_file: RegisterFile::default(),
-    //         body: Vec::new(),
-    //     }
-    // }
-
+impl InstructionBuilder {
     pub fn reg(&mut self) -> Reg {
         let tv = self.type_variable_generator.fresh();
         let reg = self.register_generator.fresh(tv);
         self.register_file.add(reg);
         reg
-    }
-
-    /// Return the parameter register at `index`, reserving parameter registers
-    /// from `reg0` upward as needed.
-    pub fn param(&mut self, index: usize) -> Reg {
-        self.max_param_index = Some(
-            self.max_param_index
-                .map_or(index, |current| current.max(index)),
-        );
-        while self.register_file.len() <= index {
-            let _ = self.reg();
-        }
-        self.register_file
-            .get(index)
-            .expect("parameter register index must exist after reservation")
     }
 
     pub fn new_obj(&mut self, fields: Vec<(impl Into<String>, Reg)>) -> Reg {
@@ -341,17 +264,9 @@ impl IRBuilder {
     /// Finalize this builder into a named IR function with an explicit
     /// signature. This is the first step toward intra-IR function definitions.
     pub fn finish(mut self, name: impl Into<String>, params: Vec<Type>, ret: Type) -> IRFunction {
-        if let Some(max_param_index) = self.max_param_index {
-            assert!(
-                params.len() > max_param_index,
-                "IRBuilder::finish declared {} params, but highest referenced parameter index is {}",
-                params.len(),
-                max_param_index
-            );
-        }
-
         // Reserve predictable parameter registers [reg0..regN) even when the
-        // caller did not request them explicitly during IR construction.
+        // caller did not allocate them explicitly (`FunctionBuilder` always does,
+        // but a bare `InstructionBuilder` finished with a signature may not have).
         while self.register_file.len() < params.len() {
             let _ = self.reg();
         }
@@ -365,35 +280,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn param_reserves_predictable_register_id() {
-        let mut b = IRBuilder::default();
-        let p0 = b.param(0);
-        let p2 = b.param(2);
-
-        assert_eq!(p0.id.0, 0);
-        assert_eq!(p2.id.0, 2);
-    }
-
-    #[test]
     fn finish_reserves_missing_parameter_registers() {
-        let b = IRBuilder::default();
+        let b = InstructionBuilder::default();
         let f = b.finish("f", vec![Type::Int, Type::Int], Type::Int);
 
         let regs: Vec<_> = f.registers.iter().collect();
         assert!(regs.len() >= 2);
         assert_eq!(regs[0].id.0, 0);
         assert_eq!(regs[1].id.0, 1);
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "IRBuilder::finish declared 1 params, but highest referenced parameter index is 1"
-    )]
-    fn finish_panics_when_referenced_param_exceeds_signature() {
-        let mut b = IRBuilder::default();
-        let _ = b.param(1);
-
-        let _ = b.finish("f", vec![Type::Int], Type::Int);
     }
 
     #[test]

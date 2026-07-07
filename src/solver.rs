@@ -653,12 +653,12 @@ impl<'a> Solver<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::IRBuilder;
+    use crate::InstructionBuilder;
 
     /// Generate constraints for the builder's body (plus any extras) and
     /// solve them, returning the solver for inspection.
     fn solve_with(
-        builder: &mut IRBuilder,
+        builder: &mut InstructionBuilder,
         extra: Vec<Constraint>,
     ) -> Result<Solver<'_>, TypeError> {
         let body = builder.body.clone();
@@ -674,7 +674,7 @@ mod tests {
         Ok(solver)
     }
 
-    fn solve(builder: &mut IRBuilder) -> Result<Solver<'_>, TypeError> {
+    fn solve(builder: &mut InstructionBuilder) -> Result<Solver<'_>, TypeError> {
         solve_with(builder, Vec::new())
     }
 
@@ -689,7 +689,7 @@ mod tests {
     /// extends the row through its tail instead of failing.
     #[test]
     fn load_missing_field_extends_open_row() {
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let r_x = b.reg();
         let obj = b.new_obj(vec![("x", r_x)]);
         let r_y = b.load(obj, "y");
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn load_existing_field_unifies_with_dst() {
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let r_x = b.reg();
         let r_y = b.reg();
         let obj = b.new_obj(vec![("x", r_x), ("y", r_y)]);
@@ -724,7 +724,7 @@ mod tests {
 
     #[test]
     fn store_missing_field_extends_open_row() {
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let r_x = b.reg();
         let obj = b.new_obj(vec![("x", r_x)]);
         let r_z = b.reg();
@@ -744,7 +744,7 @@ mod tests {
     fn row_field_type_alone_does_not_create_field() {
         // A standalone RowFieldType on an absent field is a no-op: it neither
         // extends the row nor errors. (Presence is RowHasField's job.)
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let r_x = b.reg();
         let obj = b.new_obj(vec![("x", r_x)]);
 
@@ -769,7 +769,7 @@ mod tests {
     #[test]
     fn row_has_field_alone_creates_field() {
         // The complementary case: RowHasField *does* extend the open row.
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let r_x = b.reg();
         let obj = b.new_obj(vec![("x", r_x)]);
 
@@ -790,7 +790,7 @@ mod tests {
     fn field_constraints_are_order_independent() {
         // RowFieldType listed *before* the RowHasField that creates the field:
         // staged solving settles all presence first, so `y` is still typed int.
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let r_x = b.reg();
         let obj = b.new_obj(vec![("x", r_x)]);
 
@@ -814,7 +814,7 @@ mod tests {
     #[test]
     fn subtype_wider_record_satisfies_interface() {
         // width subtyping: { x, y } <: { x: int }, and the check drives x to int
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let r_x = b.reg();
         let r_y = b.reg();
         let obj = b.new_obj(vec![("x", r_x), ("y", r_y)]);
@@ -833,7 +833,7 @@ mod tests {
 
     #[test]
     fn subtype_rejects_missing_interface_field() {
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let r_x = b.reg();
         let obj = b.new_obj(vec![("x", r_x)]);
 
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn open_rows_unify_by_absorbing_exclusive_fields() {
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let r_x = b.reg();
         let r_y1 = b.reg();
         let obj1 = b.new_obj(vec![("x", r_x), ("y", r_y1)]);
@@ -954,7 +954,7 @@ mod tests {
     #[test]
     fn call_infers_function_type() {
         // example0 flow: obj construction, field load, call
-        let mut b = IRBuilder::default();
+        let mut b = InstructionBuilder::default();
         let r_x = b.reg();
         let r_y = b.reg();
         let obj = b.new_obj(vec![("x", r_x), ("y", r_y)]);

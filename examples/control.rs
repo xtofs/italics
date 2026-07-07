@@ -12,7 +12,7 @@ use italics::*;
 /// The constraint-generation / solve pipeline is covered by the other examples;
 /// here `CBuild::from_builder` runs it internally.
 fn main() {
-    let mut b = IRBuilder::default();
+    let mut b = InstructionBuilder::default();
 
     // sum = for i in 0..10, acc = 0 { acc + i }   => 45
     let ten = b.const_int(10);

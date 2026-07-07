@@ -13,7 +13,7 @@ pub struct PreludeFn {
     pub params: &'static [Type],
     pub ret: Type,
     /// The complete `static … { … }` C definition.
-    pub c_def: &'static str,
+    pub code: &'static str,
 }
 
 impl PreludeFn {
@@ -33,13 +33,13 @@ pub static PRELUDE: &[PreludeFn] = &[
         name: "print_int",
         params: &[Type::Int],
         ret: Type::Unit,
-        c_def: "static unit_t print_int(int64_t x) { printf(\"%lld\\n\", (long long)x); return (unit_t){0}; }",
+        code: "static unit_t print_int(int64_t x) { printf(\"%lld\\n\", (long long)x); return UNIT; }",
     },
     PreludeFn {
         name: "print_bool",
         params: &[Type::Bool],
         ret: Type::Unit,
-        c_def: "static unit_t print_bool(bool x) { printf(\"%s\\n\", x ? \"true\" : \"false\"); return (unit_t){0}; }",
+        code: "static unit_t print_bool(bool x) { printf(\"%s\\n\", x ? \"true\" : \"false\"); return UNIT; }",
     },
 ];
 

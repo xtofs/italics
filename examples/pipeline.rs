@@ -13,7 +13,7 @@ use italics::*;
 /// 5) emitted C
 fn main() {
     println!("== Stage 1: Build IR ==");
-    let mut b = IRBuilder::default();
+    let mut b = InstructionBuilder::default();
 
     let x = b.const_int(21);
     let y = b.const_int(21);

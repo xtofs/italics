@@ -10,7 +10,7 @@ use italics::*;
 /// literal. They are added purely by inference (row-tail extension) from the
 /// later `store`/`load` instructions, and show up in the physical struct layout.
 fn main() {
-    let mut b = IRBuilder::default();
+    let mut b = InstructionBuilder::default();
 
     // n = 42
     let n = b.const_int(42);
