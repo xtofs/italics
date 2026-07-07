@@ -159,7 +159,11 @@ fn collect_body_type_vars(body: &[Instr], max_type: &mut u32, max_row: &mut u32)
                 collect_var(dst.tv, max_type, max_row);
                 collect_func_type_vars(sig, max_type, max_row);
             }
-            Instr::Ret { src } => collect_var(src.tv, max_type, max_row),
+            Instr::Ret { src } => {
+                if let Some(r) = src {
+                    collect_var(r.tv, max_type, max_row);
+                }
+            }
             Instr::If(f) => {
                 for reg in [&f.cond, &f.then_.result, &f.else_.result, &f.dst] {
                     collect_var(reg.tv, max_type, max_row);

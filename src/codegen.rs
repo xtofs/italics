@@ -591,6 +591,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 let lit = match value {
                     crate::instructions::Value::Int(v) => v.to_string(),
                     crate::instructions::Value::Bool(v) => v.to_string(),
+                    crate::instructions::Value::Unit => "(unit_t){0}".to_string(),
                 };
                 writeln!(out, "{} {} = {};", self.ctype(dst.id), dst, lit).unwrap();
             }
@@ -707,13 +708,36 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                     ));
                 }
                 match return_style {
+                    // Entry wrapper: print the result (adapting to its type) and
+                    // exit 0.
                     ReturnStyle::Main => {
-                        writeln!(out, "printf(\"result: %lld\\n\", {});", src).unwrap();
+                        if let Some(r) = src {
+                            match self.ctype(r.id) {
+                                "int64_t" => {
+                                    writeln!(out, "printf(\"result: %lld\\n\", (long long){});", r)
+                                        .unwrap();
+                                }
+                                "bool" => {
+                                    writeln!(
+                                        out,
+                                        "printf(\"result: %s\\n\", {} ? \"true\" : \"false\");",
+                                        r
+                                    )
+                                    .unwrap();
+                                }
+                                // unit or other: nothing to print; consume the
+                                // value so it isn't flagged unused under -Wall.
+                                _ => writeln!(out, "(void){};", r).unwrap(),
+                            }
+                        }
                         writeln!(out, "return 0;").unwrap();
                     }
-                    ReturnStyle::Function => {
-                        writeln!(out, "return {};", src).unwrap();
-                    }
+                    // Ordinary function: return the value. A valueless `ret`
+                    // yields unit (the function's return type is `unit_t`).
+                    ReturnStyle::Function => match src {
+                        Some(r) => writeln!(out, "return {};", r).unwrap(),
+                        None => writeln!(out, "return (unit_t){{0}};").unwrap(),
+                    },
                 }
                 *saw_ret = true;
             }
@@ -725,6 +749,8 @@ impl<'a, 'b> CodeGen<'a, 'b> {
 fn default_return_literal(ret_ctype: &str) -> &'static str {
     if ret_ctype == "bool" {
         "false"
+    } else if ret_ctype == "unit_t" {
+        "(unit_t){0}"
     } else if ret_ctype.ends_with('*') {
         "NULL"
     } else {
@@ -768,6 +794,23 @@ fn solve_function<'a>(
     for instr in &function.body {
         constraints.extend(solver.generate_constraints(instr));
     }
+
+    // Bind each `ret` to the declared return type: a returned register must have
+    // it, and a valueless `ret` requires the function to return unit.
+    let ret_ty = (*function.signature.ret).clone();
+    for instr in &function.body {
+        if let Instr::Ret { src } = instr {
+            let returned = match src {
+                Some(r) => r.ty(),
+                None => Type::Unit,
+            };
+            constraints.push(crate::constraints::Constraint::Equal(
+                returned,
+                ret_ty.clone(),
+            ));
+        }
+    }
+
     solver.solve(&constraints)?;
     Ok(solver)
 }
@@ -943,7 +986,9 @@ fn used_registers(body: &[Instr]) -> std::collections::HashSet<RegId> {
             used.insert(rhs.id);
         }
         Instr::Ret { src } => {
-            used.insert(src.id);
+            if let Some(r) = src {
+                used.insert(r.id);
+            }
         }
         Instr::If(f) => {
             used.insert(f.cond.id);
@@ -1192,6 +1237,59 @@ mod tests {
     }
 
     #[test]
+    fn unit_returning_functions() {
+        // greet(): a side effect, then a valueless `ret` (returns unit).
+        let mut greet = IRBuilder::default();
+        let five = greet.const_int(5);
+        let p = greet.prelude("print_int");
+        let _ = greet.call(p, vec![five]);
+        greet.ret_unit();
+        let greet_fn = greet.finish("greet", vec![], Type::Unit);
+
+        // mk_unit(): returns a materialized unit constant.
+        let mut mk = IRBuilder::default();
+        let u = mk.const_unit();
+        mk.ret(u);
+        let mk_fn = mk.finish("mk_unit", vec![], Type::Unit);
+
+        // main(): call both (results dropped), return 0.
+        let mut entry = IRBuilder::default();
+        let g = entry.func("greet", vec![], Type::Unit);
+        let _ = entry.call(g, vec![]);
+        let m = entry.func("mk_unit", vec![], Type::Unit);
+        let _ = entry.call(m, vec![]);
+        let zero = entry.const_int(0);
+        entry.ret(zero);
+        let entry_fn = entry.finish("main", vec![], Type::Int);
+
+        let mut program = IRProgram::new("main");
+        program.add_function(greet_fn);
+        program.add_function(mk_fn);
+        program.add_function(entry_fn);
+
+        let c = emit_c_program(&program).expect("program should emit");
+
+        assert!(c.contains("static unit_t greet(void)"), "{}", c);
+        assert!(c.contains("static unit_t mk_unit(void)"), "{}", c);
+        // both `ret_unit` and `const_unit` materialize the unit value
+        assert!(c.contains("(unit_t){0}"), "{}", c);
+    }
+
+    #[test]
+    fn ret_unit_in_non_unit_function_is_rejected() {
+        // A valueless `ret` requires a unit return type.
+        let mut b = IRBuilder::default();
+        b.ret_unit();
+        let f = b.finish("bad", vec![], Type::Int);
+
+        let mut program = IRProgram::new("bad");
+        program.add_function(f);
+
+        let err = emit_c_program(&program).expect_err("ret_unit in an int fn must fail");
+        assert!(matches!(err, ProgramCodegenError::Type(_)), "{:?}", err);
+    }
+
+    #[test]
     fn unsupported_type_is_an_error() {
         // Force a register to an interface type and confirm it is rejected.
         let mut b = IRBuilder::default();
@@ -1393,10 +1491,10 @@ mod tests {
         let bin = dir.join("italics_smoke");
         std::fs::write(&src, &c).unwrap();
         let status = Command::new("cc")
+            .arg("-Wall")
+            .arg("-O1")
             .arg(&src)
             .arg("-o")
-            .arg("-O1")
-            .arg("-v")
             .arg(&bin)
             .status()
             .unwrap();

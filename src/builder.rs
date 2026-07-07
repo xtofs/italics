@@ -69,6 +69,10 @@ impl<const N: usize> FunctionBuilder<N> {
         self.ir.const_bool(v)
     }
 
+    pub fn const_unit(&mut self) -> Reg {
+        self.ir.const_unit()
+    }
+
     pub fn binop(&mut self, op: BinOpKind, lhs: Reg, rhs: Reg) -> Reg {
         self.ir.binop(op, lhs, rhs)
     }
@@ -83,6 +87,10 @@ impl<const N: usize> FunctionBuilder<N> {
 
     pub fn ret(&mut self, src: Reg) {
         self.ir.ret(src);
+    }
+
+    pub fn ret_unit(&mut self) {
+        self.ir.ret_unit();
     }
 
     /// Value-producing conditional. Branch bodies are built against the inner
@@ -206,6 +214,16 @@ impl IRBuilder {
         dst
     }
 
+    /// Materialize the single value of the unit type.
+    pub fn const_unit(&mut self) -> Reg {
+        let dst = self.reg();
+        self.body.push(Instr::Const {
+            dst,
+            value: Value::Unit,
+        });
+        dst
+    }
+
     pub fn binop(&mut self, op: BinOpKind, lhs: Reg, rhs: Reg) -> Reg {
         let dst = self.reg();
         self.body.push(Instr::BinOp { dst, op, lhs, rhs });
@@ -245,7 +263,13 @@ impl IRBuilder {
     }
 
     pub fn ret(&mut self, src: Reg) {
-        self.body.push(Instr::Ret { src });
+        self.body.push(Instr::Ret { src: Some(src) });
+    }
+
+    /// Return with no explicit value — the function yields unit. Only valid in a
+    /// unit-returning function.
+    pub fn ret_unit(&mut self) {
+        self.body.push(Instr::Ret { src: None });
     }
 
     /// Build a sub-block: run `f` with the body temporarily swapped for a fresh

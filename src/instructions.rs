@@ -8,6 +8,8 @@ use crate::types::{FuncType, Type};
 pub enum Value {
     Int(i64),
     Bool(bool),
+    /// The single value of the [`Unit`](crate::types::Type::Unit) type.
+    Unit,
 }
 
 impl fmt::Display for Value {
@@ -15,6 +17,7 @@ impl fmt::Display for Value {
         match self {
             Value::Int(v) => write!(f, "{}", v),
             Value::Bool(v) => write!(f, "{}", v),
+            Value::Unit => write!(f, "()"),
         }
     }
 }
@@ -82,7 +85,7 @@ pub enum Instr {
         sig: FuncType,
     },
     Ret {
-        src: Reg,
+        src: Option<Reg>,
     },
     /// Value-producing conditional; see [`If`].
     If(If),
@@ -221,7 +224,10 @@ impl fmt::Display for DisplayLeaf<'_> {
             Instr::LoadFunc { dst, name, sig } => {
                 write!(f, "ldfn {} = @{} : {}", dst, name, Type::Func(sig.clone()))
             }
-            Instr::Ret { src } => write!(f, "ret  {}", src),
+            Instr::Ret { src } => match src {
+                Some(r) => write!(f, "ret  {}", r),
+                None => write!(f, "ret"),
+            },
             // Control-flow forms are rendered by `Instr::fmt_at`; `DisplayLeaf`
             // is only ever constructed for the single-line instructions above.
             Instr::If(_) | Instr::For(_) => unreachable!("control flow uses fmt_at"),

@@ -582,6 +582,7 @@ impl<'a> Solver<'a> {
                 let ty = match value {
                     Value::Int(_) => Type::Int,
                     Value::Bool(_) => Type::Bool,
+                    Value::Unit => Type::Unit,
                 };
                 vec![Constraint::Equal(dst.ty(), ty)]
             }
@@ -606,9 +607,11 @@ impl<'a> Solver<'a> {
                 vec![Constraint::Equal(dst.ty(), Type::Func(sig.clone()))]
             }
 
-            Instr::Ret { src } => {
-                // The program result is the exit-observable int.
-                vec![Constraint::Equal(src.ty(), Type::Int)]
+            Instr::Ret { .. } => {
+                // The returned value's type flows from the body; it is bound to
+                // the function's declared return type by the caller
+                // (`solve_function`), not here.
+                vec![]
             }
 
             Instr::If(f) => {

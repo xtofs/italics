@@ -78,8 +78,15 @@ it's a YAGNI-vs-fidelity call, not a correctness one.
   - re-add a `ground_registers` guard: a register whose type is `Unit`/void is a
     `CodegenError` (enforces "unit never escapes").
 
-## Related follow-ups (also deferred)
+## Related follow-ups
 
-- `const_unit` / a way to construct a unit **value** in the IR.
-- User-defined unit-returning `IRFunction`s (would also want
-  `Ret { src: Option<Reg> }` and void entry-wrapper handling).
+- ~~`const_unit` / a way to construct a unit **value** in the IR.~~ **Done** —
+  `IRBuilder::const_unit()` → `unit_t reg = (unit_t){0};`.
+- ~~User-defined unit-returning `IRFunction`s.~~ **Done** — `Ret { src: Option<Reg> }`
+  with `IRBuilder::ret_unit()`; a valueless `ret` lowers to `return (unit_t){0};` and
+  is bound to the function's declared return type in `solve_function` (so `ret_unit()`
+  in a non-unit function is a type error). No `void` entry-wrapper handling was needed:
+  because unit is a value, `unit_t` functions just return the value like any other.
+
+Both are covered by the `unit_returning_functions` / `ret_unit_in_non_unit_function_is_rejected`
+tests in [src/codegen.rs](../src/codegen.rs).
