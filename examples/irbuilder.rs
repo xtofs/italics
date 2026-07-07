@@ -25,7 +25,7 @@ fn main() {
     // sum = y + one             — forces y : int; sum = 43
     let sum = b.binop(BinOpKind::Add, y, one);
     // f = @print_int : (int) → int   — runtime fn, signature as constraint
-    let f = b.func("print_int", vec![Type::Int], Type::Int);
+    let f = b.prelude("print_int");
     // call f(sum)               — prints 43
     let _ = b.call(f, vec![sum]);
     // store obj.z = sum         — row extension again: struct R0 gains `z`

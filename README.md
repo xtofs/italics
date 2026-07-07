@@ -21,35 +21,20 @@ cargo run --example functions
 cargo run --example control
 ```
 
-The functions examples write generated C to:
+Examples that emit C write generated sources under `target/`.
+Notable outputs include:
 
 ```text
+target/generated.c
 target/generated_pipeline.c
 target/generated_functions.c
 target/generated_control.c
 ```
 
-Then compile and run it manually:
+`functions` and `control` also compile and run the generated C automatically
+through `CBuild`.
 
-```bash
-cc target/generated.c -o target/generated
-./target/generated
-```
-
-## Display Modes
-
-Default output is ASCII (for logs/comments/type rendering):
-
-- type vars: `t_0`, `r_3`
-- arrows/operators: `->`, `:in:`, `<:`, `=>`
-
-Enable Unicode prettified output:
-
-```bash
-cargo run --example main --features pretty-unicode
-```
-
-Unicode mode uses symbols like `τ`, `ρ`, `→`, `∈`, `⊆`, `↦`.
+Display formatting options are documented in [Display Modes](DISPLAY_MODES.md).
 
 ## Main Components
 
@@ -61,12 +46,13 @@ Unicode mode uses symbols like `τ`, `ρ`, `→`, `∈`, `⊆`, `↦`.
 
 ## Examples
 
-- `examples/main.rs`: inference walkthrough and constraint/debug output
-- `examples/codegen.rs`: program-level API usage (`IRProgram` + `emit_c_program`) with internal function calls and parameter passing
+- `examples/irbuilder.rs`: end-to-end single-function inference and C emission demo
 - `examples/pipeline.rs`: stage-by-stage pipeline demo (IR -> constraints -> solving -> inferred types -> C)
-- `examples/irbuilder.rs`: end-to-end single-function inference -> C emission demo
+- `examples/functions.rs`: program-level API demo (`IRProgram` + `emit_c_program`) with internal function calls and parameter passing
+- `examples/control.rs`: structured control-flow demo (`if`/`for`) lowered to C
 
 ## Documentation
 
 - Architecture and design reference: `ARCHITECTURE.md`
 - Roadmap and upcoming work: `PLAN.md`
+- Display symbol/formatting options: `DISPLAY_MODES.md`

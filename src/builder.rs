@@ -77,6 +77,10 @@ impl<const N: usize> FunctionBuilder<N> {
         self.ir.func(name, params, ret)
     }
 
+    pub fn prelude(&mut self, name: &str) -> Reg {
+        self.ir.prelude(name)
+    }
+
     pub fn ret(&mut self, src: Reg) {
         self.ir.ret(src);
     }
@@ -205,6 +209,21 @@ impl IRBuilder {
     pub fn binop(&mut self, op: BinOpKind, lhs: Reg, rhs: Reg) -> Reg {
         let dst = self.reg();
         self.body.push(Instr::BinOp { dst, op, lhs, rhs });
+        dst
+    }
+
+    /// Load a runtime prelude function (e.g. `print_int`) into a register,
+    /// pulling its signature from the [`prelude`](crate::prelude) table so the
+    /// caller can't get it wrong. Panics if `name` is not a prelude function.
+    pub fn prelude(&mut self, name: &str) -> Reg {
+        let f = crate::prelude::get(name)
+            .unwrap_or_else(|| panic!("unknown prelude function {:?}", name));
+        let dst = self.reg();
+        self.body.push(Instr::LoadFunc {
+            dst,
+            name: f.name.to_string(),
+            sig: f.signature(),
+        });
         dst
     }
 

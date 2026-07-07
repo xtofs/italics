@@ -47,7 +47,7 @@ fn build_entry(name: impl Into<String>) -> IRFunction {
     let helper_fn = b.func("helper", vec![Type::Int, Type::Int], Type::Int);
     let value = b.call(helper_fn, vec![arg1, arg2]);
 
-    let print_int_fn = b.func("print_int", vec![Type::Int], Type::Int);
+    let print_int_fn = b.prelude("print_int");
     let _ = b.call(print_int_fn, vec![value]);
 
     b.ret(value);

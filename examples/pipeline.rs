@@ -20,7 +20,7 @@ fn main() {
     let sum = b.binop(BinOpKind::Add, x, y);
     let obj = b.new_obj(vec![("sum", sum)]);
     let loaded = b.load(obj, "sum");
-    let f = b.func("print_int", vec![Type::Int], Type::Int);
+    let f = b.prelude("print_int");
     let _ = b.call(f, vec![loaded]);
     b.ret(loaded);
 

@@ -43,6 +43,7 @@ impl<'a> Solver<'a> {
             (ty, Type::Unknown(tv)) => self.bind_var(tv, ty),
             (Type::Int, Type::Int) => Ok(()),
             (Type::Bool, Type::Bool) => Ok(()),
+            (Type::Unit, Type::Unit) => Ok(()),
             (Type::Ptr(a), Type::Ptr(b)) => self.unify(*a, *b),
             (Type::Func(f1), Type::Func(f2)) => self.unify_func(f1, f2),
             (Type::Record(r1), Type::Record(r2)) => self.unify_row(r1, r2),
@@ -131,7 +132,7 @@ impl<'a> Solver<'a> {
             }
             Type::Stack(ts) => ts.iter().any(|t| self.occurs_in(tv, t)),
             Type::Existential(e) => e.var == tv || self.occurs_in(tv, &e.ty),
-            Type::Int | Type::Bool => false,
+            Type::Int | Type::Bool | Type::Unit => false,
         }
     }
 
@@ -467,6 +468,7 @@ impl<'a> Solver<'a> {
         match self.resolve_type(ty) {
             Type::Int => Type::Int,
             Type::Bool => Type::Bool,
+            Type::Unit => Type::Unit,
             Type::Ptr(inner) => Type::Ptr(Box::new(self.apply(*inner))),
             Type::Func(f) => Type::Func(FuncType {
                 params: f.params.into_iter().map(|t| self.apply(t)).collect(),

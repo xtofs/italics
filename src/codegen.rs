@@ -9,9 +9,18 @@ use crate::registers::{RegId, RegisterFile};
 use crate::solver::{Solver, TypeError};
 use crate::types::{FuncType, Type};
 
-/// Runtime functions the emitted prelude defines itself. A `LoadFunc` naming
-/// one of these needs no `extern` prototype.
-const PRELUDE_FUNCS: &[&str] = &["print_int", "print_bool"];
+/// The fixed runtime preamble: standard includes plus the `unit_t` singleton
+/// type that [`Type::Unit`] lowers to. An unused file-scope typedef is
+/// warning-clean under `-Wall`, so it is always emitted.
+const PREAMBLE: &str = "\
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct { char _; } unit_t;
+
+";
 
 #[derive(Debug)]
 pub enum CodegenError {
@@ -174,6 +183,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         match ty {
             Type::Int => Ok("int64_t".to_string()),
             Type::Bool => Ok("bool".to_string()),
+            Type::Unit => Ok("unit_t".to_string()),
             Type::Ptr(inner) => Ok(format!("{}*", self.lower(inner)?)),
             Type::Record(row) => {
                 let mut fields = Vec::with_capacity(row.fields.len());
@@ -277,33 +287,13 @@ impl<'a, 'b> CodeGen<'a, 'b> {
     fn emit(&self, body: &[Instr]) -> Result<String, CodegenError> {
         let mut out = String::new();
 
-        out.push_str("#include <stdint.h>\n");
-        out.push_str("#include <stdbool.h>\n");
-        out.push_str("#include <stdio.h>\n");
-        out.push_str("#include <stdlib.h>\n\n");
+        out.push_str(PREAMBLE);
 
         self.emit_supporting_type_defs(&mut out);
 
-        // Prelude runtime functions (return their argument — the type algebra
-        // has no unit type). Emit only the ones the program actually loads, so
-        // the translation unit stays warning-clean under -Wall.
-        let loaded = loaded_func_names(body);
-        let mut emitted_prelude = false;
-        if loaded.contains("print_int") {
-            out.push_str(
-                "static int64_t print_int(int64_t x) { printf(\"%lld\\n\", x); return x; }\n",
-            );
-            emitted_prelude = true;
-        }
-        if loaded.contains("print_bool") {
-            out.push_str(
-                "static bool print_bool(bool x) { printf(\"%s\\n\", x ? \"true\" : \"false\"); return x; }\n",
-            );
-            emitted_prelude = true;
-        }
-        if emitted_prelude {
-            out.push('\n');
-        }
+        // Prelude runtime functions — only the ones the program actually loads,
+        // so the translation unit stays warning-clean under -Wall.
+        emit_prelude(&loaded_func_names(body), &mut out);
 
         // Extern prototypes for LoadFunc names not defined by the prelude.
         self.emit_externs(body, &mut out, &HashMap::new())?;
@@ -484,7 +474,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
 
         let mut seen: Vec<&str> = Vec::new();
         for (name, sig) in ordered {
-            if PRELUDE_FUNCS.contains(&name) || signatures.contains_key(name) {
+            if crate::prelude::get(name).is_some() || signatures.contains_key(name) {
                 continue;
             }
             seen.push(name);
@@ -514,6 +504,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         match ty {
             Type::Int => Ok("int64_t".to_string()),
             Type::Bool => Ok("bool".to_string()),
+            Type::Unit => Ok("unit_t".to_string()),
             Type::Ptr(inner) => Ok(format!("{}*", self.lower_readonly(inner)?)),
             Type::Record(row) => {
                 let mut fields = Vec::with_capacity(row.fields.len());
@@ -860,10 +851,7 @@ pub fn emit_c_program(program: &IRProgram) -> Result<String, ProgramCodegenError
     }
 
     let mut out = String::new();
-    out.push_str("#include <stdint.h>\n");
-    out.push_str("#include <stdbool.h>\n");
-    out.push_str("#include <stdio.h>\n");
-    out.push_str("#include <stdlib.h>\n\n");
+    out.push_str(PREAMBLE);
 
     // Internal function prototypes so `LoadFunc` can reference in-program defs
     // regardless of definition order.
@@ -885,21 +873,7 @@ pub fn emit_c_program(program: &IRProgram) -> Result<String, ProgramCodegenError
         .iter()
         .flat_map(|f| loaded_func_names(&f.body).into_iter())
         .collect();
-
-    let mut emitted_prelude = false;
-    if loaded_all.contains("print_int") {
-        out.push_str("static int64_t print_int(int64_t x) { printf(\"%lld\\n\", x); return x; }\n");
-        emitted_prelude = true;
-    }
-    if loaded_all.contains("print_bool") {
-        out.push_str(
-            "static bool print_bool(bool x) { printf(\"%s\\n\", x ? \"true\" : \"false\"); return x; }\n",
-        );
-        emitted_prelude = true;
-    }
-    if emitted_prelude {
-        out.push('\n');
-    }
+    emit_prelude(&loaded_all, &mut out);
 
     for function in &program.functions {
         let mut tvg = type_var_generator_for_function(function);
@@ -997,6 +971,23 @@ fn loaded_func_names(body: &[Instr]) -> std::collections::HashSet<String> {
     names
 }
 
+/// Append the C definition of every prelude function the program actually
+/// loads, in table order. Unloaded prelude functions are skipped so the
+/// translation unit stays warning-clean under `-Wall`.
+fn emit_prelude(loaded: &HashSet<String>, out: &mut String) {
+    let mut any = false;
+    for f in crate::prelude::PRELUDE {
+        if loaded.contains(f.name) {
+            out.push_str(f.c_def);
+            out.push('\n');
+            any = true;
+        }
+    }
+    if any {
+        out.push('\n');
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1076,20 +1067,20 @@ mod tests {
 
     #[test]
     fn loadfunc_signature_drives_inference() {
-        // print_int : (int) -> int applied to a loaded field forces that
+        // print_int : (int) -> unit applied to a loaded field forces that
         // field (and register) to int.
         let mut b = IRBuilder::default();
         let n = b.const_int(7);
         let obj = b.new_obj(vec![("x", n)]);
         let x = b.load(obj, "x");
-        let f = b.func("print_int", vec![Type::Int], Type::Int);
+        let f = b.prelude("print_int");
         let _r = b.call(f, vec![x]);
         b.ret(x);
 
         let c = emit(&mut b).expect("should emit");
 
         assert!(
-            c.contains("typedef int64_t (*fn0)(int64_t);"),
+            c.contains("typedef unit_t (*fn0)(int64_t);"),
             "expected fn typedef matching the signature:\n{}",
             c
         );
@@ -1390,7 +1381,7 @@ mod tests {
         let y = b.load(obj, "y");
         let one = b.const_int(1);
         let sum = b.binop(BinOpKind::Add, y, one);
-        let f = b.func("print_int", vec![Type::Int], Type::Int);
+        let f = b.prelude("print_int");
         let _ = b.call(f, vec![sum]);
         b.store(obj, "z", sum);
         b.ret(sum);

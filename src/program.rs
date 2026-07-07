@@ -57,7 +57,7 @@ impl IRProgram {
 
 fn collect_type_vars(ty: &Type, max_type: &mut u32, max_row: &mut u32) {
     match ty {
-        Type::Int | Type::Bool => {}
+        Type::Int | Type::Bool | Type::Unit => {}
         Type::Ptr(inner) => collect_type_vars(inner, max_type, max_row),
         Type::Func(func) => {
             for param in &func.params {

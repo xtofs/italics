@@ -27,7 +27,7 @@ fn main() {
 
     // total = sum + pick                           => 46
     let total = b.binop(BinOpKind::Add, sum, pick);
-    let print_int = b.func("print_int", vec![Type::Int], Type::Int);
+    let print_int = b.prelude("print_int");
     let _ = b.call(print_int, vec![total]);
     b.ret(total);
 

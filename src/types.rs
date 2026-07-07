@@ -46,6 +46,9 @@ impl fmt::Display for Row {
 pub enum Type {
     Int,
     Bool,
+    /// The singleton type with exactly one value. Lowered to a one-byte C
+    /// struct (`unit_t`); used as the return type of side-effecting functions.
+    Unit,
     Ptr(Box<Type>),
     Func(FuncType),
     Record(Row),
@@ -60,6 +63,7 @@ impl fmt::Display for Type {
         match self {
             Type::Int => write!(fmt, "int"),
             Type::Bool => write!(fmt, "bool"),
+            Type::Unit => write!(fmt, "unit"),
             Type::Ptr(t) => write!(fmt, "ptr({})", t),
             Type::Func(func_type) => {
                 write!(fmt, "(")?;
