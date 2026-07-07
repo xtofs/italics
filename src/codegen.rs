@@ -994,7 +994,7 @@ mod tests {
     use crate::constraints::Constraint;
     use crate::instructions::BinOpKind;
     use crate::types::{Row, Type};
-    use crate::{IRBuilder, IRProgram, Solver};
+    use crate::{CBuild, IRBuilder, IRProgram, Solver};
     use std::collections::BTreeMap;
 
     /// Solve the builder's body and emit C, mirroring the real pipeline.
@@ -1372,8 +1372,6 @@ mod tests {
     #[test]
     #[ignore = "requires a C compiler; run manually in verification"]
     fn compile_and_run_smoke() {
-        use std::process::Command;
-
         let mut b = IRBuilder::default();
         let n = b.const_int(42);
         let obj = b.new_obj(vec![("x", n)]);
@@ -1386,23 +1384,13 @@ mod tests {
         b.store(obj, "z", sum);
         b.ret(sum);
 
-        let c = emit(&mut b).expect("should emit");
-
-        let dir = std::env::temp_dir();
-        let src = dir.join("italics_smoke.c");
-        let bin = dir.join("italics_smoke");
-        std::fs::write(&src, &c).unwrap();
-        let status = Command::new("cc")
-            .arg(&src)
-            .arg("-o")
-            .arg("-O1")
-            .arg("-v")
-            .arg(&bin)
-            .status()
-            .unwrap();
-        assert!(status.success(), "cc failed:\n{}", c);
-        let out = Command::new(&bin).output().unwrap();
-        let stdout = String::from_utf8_lossy(&out.stdout);
+        // compile and run the code above into a temp file
+        let report = CBuild::from_builder("italics_smoke", b)
+            .expect("should build")
+            .dir(std::env::temp_dir().join("italics_smoke_build"))
+            .run()
+            .expect("generate/compile/run should succeed");
+        let stdout = report.stdout;
         assert!(stdout.contains("43"), "expected 43, got: {}", stdout);
     }
 }
