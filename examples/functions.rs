@@ -1,15 +1,9 @@
-use std::fs;
-use std::path::Path;
-
 use italics::*;
-
-#[macro_use]
-#[path = "codegen/cmd.rs"]
-mod cmd;
 
 /// Demonstrate program-level codegen with internal IR functions.
 ///
-/// This example focuses on `IRFunction`, `IRProgram`, and `emit_c_program`.
+/// This example focuses on `IRFunction`, `IRProgram`, and `emit_c_program`,
+/// then uses the `CBuild` harness to generate, compile, and run the C.
 fn main() {
     let helper = build_helper();
     let entry = build_entry("entry");
@@ -18,34 +12,13 @@ fn main() {
     program.add_function(helper);
     program.add_function(entry);
 
-    let c = emit_c_program(&program).expect("program codegen should succeed");
+    let build = CBuild::from_program("generated_functions", &program);
 
-    println!("Generated C for program with internal calls:\n");
-    let target = Path::new("./target");
-    if target.is_dir() {
-        let c_file = target.join("generated.c");
-        let binary_file = target.join("generated");
-        fs::write(&c_file, &c).expect(&format!(
-            "write {}",
-            c_file.to_str().expect("file path not a string")
-        ));
-        println!("written to {}", c_file.display());
-        println!("");
+    let report = build.run().expect("generate/compile/run should succeed");
 
-        let _ = run_cmd!(
-            "cc",
-            "-Wall",
-            "-O2", // should be at least -O1 to allow for allocation optimization
-            c_file.into_os_string(),
-            "-o",
-            binary_file.clone().into_os_string(),
-        )
-        .expect("failed to execute process");
-
-        let _ = run_cmd!(binary_file.as_os_str()).expect("failed to execute process");
-    } else {
-        println!("{}", c);
-    }
+    println!("\nSource generated to {}", build.source_path().display());
+    println!("\nCompiled to {}", build.binary_path().display());
+    println!("\nProgram output:\n{}", report.stdout);
 }
 
 fn build_helper() -> IRFunction {

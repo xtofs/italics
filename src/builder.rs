@@ -1,4 +1,4 @@
-use crate::instructions::{BinOpKind, Instr, Value};
+use crate::instructions::{BinOpKind, Block, For, If, Instr, Value};
 use crate::program::IRFunction;
 use crate::registers::{Reg, RegGenerator, RegisterFile};
 use crate::types::{FuncType, Type};
@@ -79,6 +79,28 @@ impl<const N: usize> FunctionBuilder<N> {
 
     pub fn ret(&mut self, src: Reg) {
         self.ir.ret(src);
+    }
+
+    /// Value-producing conditional. Branch bodies are built against the inner
+    /// `IRBuilder` (parameters are already allocated, so a block body only needs
+    /// the value-building methods).
+    pub fn if_value(
+        &mut self,
+        cond: Reg,
+        then_f: impl FnOnce(&mut IRBuilder) -> Reg,
+        else_f: impl FnOnce(&mut IRBuilder) -> Reg,
+    ) -> Reg {
+        self.ir.if_value(cond, then_f, else_f)
+    }
+
+    /// Bounded loop with a loop-carried accumulator; see [`IRBuilder::for_acc`].
+    pub fn for_acc(
+        &mut self,
+        bound: Reg,
+        init: Reg,
+        body_f: impl FnOnce(&mut IRBuilder, Reg, Reg) -> Reg,
+    ) -> Reg {
+        self.ir.for_acc(bound, init, body_f)
     }
 
     pub fn build(self) -> IRFunction {
@@ -205,6 +227,72 @@ impl IRBuilder {
 
     pub fn ret(&mut self, src: Reg) {
         self.body.push(Instr::Ret { src });
+    }
+
+    /// Build a sub-block: run `f` with the body temporarily swapped for a fresh
+    /// one, and return the instructions it emitted together with whatever `f`
+    /// produced. The register/type-variable generators and the register file
+    /// are shared throughout, so register ids stay globally unique.
+    fn block_with<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> (Vec<Instr>, R) {
+        let saved = std::mem::take(&mut self.body);
+        let result = f(self);
+        (std::mem::replace(&mut self.body, saved), result)
+    }
+
+    /// Value-producing conditional. Each branch closure builds its block and
+    /// returns the register holding that branch's result; the two are merged
+    /// into a single `dst` register, returned to the caller. Only that `dst`
+    /// escapes the blocks, so block-local registers cannot leak.
+    pub fn if_value(
+        &mut self,
+        cond: Reg,
+        then_f: impl FnOnce(&mut Self) -> Reg,
+        else_f: impl FnOnce(&mut Self) -> Reg,
+    ) -> Reg {
+        let (then_instrs, then_result) = self.block_with(then_f);
+        let (else_instrs, else_result) = self.block_with(else_f);
+        let dst = self.reg();
+        self.body.push(Instr::If(If {
+            cond,
+            then_: Block {
+                instrs: then_instrs,
+                result: then_result,
+            },
+            else_: Block {
+                instrs: else_instrs,
+                result: else_result,
+            },
+            dst,
+        }));
+        dst
+    }
+
+    /// Bounded loop with a loop-carried accumulator. The body closure receives
+    /// the induction variable (`0..bound`) and the current accumulator, and
+    /// returns the register holding the accumulator's next value. The final
+    /// accumulator register is returned to the caller.
+    pub fn for_acc(
+        &mut self,
+        bound: Reg,
+        init: Reg,
+        body_f: impl FnOnce(&mut Self, Reg, Reg) -> Reg,
+    ) -> Reg {
+        // Allocate index/acc up front so the body can reference them; `reg`
+        // only allocates a register, it emits no instruction.
+        let index = self.reg();
+        let acc = self.reg();
+        let (instrs, next) = self.block_with(|b| body_f(b, index, acc));
+        self.body.push(Instr::For(For {
+            index,
+            bound,
+            acc,
+            init,
+            body: Block {
+                instrs,
+                result: next,
+            },
+        }));
+        acc
     }
 
     /// Finalize this builder into a named IR function with an explicit

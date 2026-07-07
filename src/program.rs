@@ -74,10 +74,10 @@ fn collect_type_vars(ty: &Type, max_type: &mut u32, max_row: &mut u32) {
             for field_ty in row.fields.values() {
                 collect_type_vars(field_ty, max_type, max_row);
             }
-            if let Some(tail) = row.tail {
-                if tail.is_row() {
-                    *max_row = (*max_row).max(tail.index());
-                }
+            if let Some(tail) = row.tail
+                && tail.is_row()
+            {
+                *max_row = (*max_row).max(tail.index());
             }
         }
         Type::Existential(existential) => {
@@ -123,6 +123,60 @@ fn collect_var(tv: TypeVar, max_type: &mut u32, max_row: &mut u32) {
     }
 }
 
+/// Collect the type variables referenced by every instruction in `body`,
+/// recursing into the sub-blocks of control-flow instructions.
+fn collect_body_type_vars(body: &[Instr], max_type: &mut u32, max_row: &mut u32) {
+    for instr in body {
+        match instr {
+            Instr::Load { dst, src, .. } => {
+                collect_var(dst.tv, max_type, max_row);
+                collect_var(src.tv, max_type, max_row);
+            }
+            Instr::Store { dst, src, .. } => {
+                collect_var(dst.tv, max_type, max_row);
+                collect_var(src.tv, max_type, max_row);
+            }
+            Instr::NewObj { dst, fields } => {
+                collect_var(dst.tv, max_type, max_row);
+                for (_, reg) in fields {
+                    collect_var(reg.tv, max_type, max_row);
+                }
+            }
+            Instr::Call { func, args, ret } => {
+                collect_var(func.tv, max_type, max_row);
+                collect_var(ret.tv, max_type, max_row);
+                for arg in args {
+                    collect_var(arg.tv, max_type, max_row);
+                }
+            }
+            Instr::Const { dst, .. } => collect_var(dst.tv, max_type, max_row),
+            Instr::BinOp { dst, lhs, rhs, .. } => {
+                collect_var(dst.tv, max_type, max_row);
+                collect_var(lhs.tv, max_type, max_row);
+                collect_var(rhs.tv, max_type, max_row);
+            }
+            Instr::LoadFunc { dst, sig, .. } => {
+                collect_var(dst.tv, max_type, max_row);
+                collect_func_type_vars(sig, max_type, max_row);
+            }
+            Instr::Ret { src } => collect_var(src.tv, max_type, max_row),
+            Instr::If(f) => {
+                for reg in [&f.cond, &f.then_.result, &f.else_.result, &f.dst] {
+                    collect_var(reg.tv, max_type, max_row);
+                }
+                collect_body_type_vars(&f.then_.instrs, max_type, max_row);
+                collect_body_type_vars(&f.else_.instrs, max_type, max_row);
+            }
+            Instr::For(f) => {
+                for reg in [&f.index, &f.bound, &f.acc, &f.init, &f.body.result] {
+                    collect_var(reg.tv, max_type, max_row);
+                }
+                collect_body_type_vars(&f.body.instrs, max_type, max_row);
+            }
+        }
+    }
+}
+
 /// Create a fresh type-variable generator that starts *after* every type
 /// variable referenced by the function's signature, body and register file.
 ///
@@ -138,42 +192,7 @@ pub fn type_var_generator_for_function(function: &IRFunction) -> TypeVarGenerato
         collect_var(reg.tv, &mut max_type, &mut max_row);
     }
 
-    for instr in &function.body {
-        match instr {
-            Instr::Load { dst, src, .. } => {
-                collect_var(dst.tv, &mut max_type, &mut max_row);
-                collect_var(src.tv, &mut max_type, &mut max_row);
-            }
-            Instr::Store { dst, src, .. } => {
-                collect_var(dst.tv, &mut max_type, &mut max_row);
-                collect_var(src.tv, &mut max_type, &mut max_row);
-            }
-            Instr::NewObj { dst, fields } => {
-                collect_var(dst.tv, &mut max_type, &mut max_row);
-                for (_, reg) in fields {
-                    collect_var(reg.tv, &mut max_type, &mut max_row);
-                }
-            }
-            Instr::Call { func, args, ret } => {
-                collect_var(func.tv, &mut max_type, &mut max_row);
-                collect_var(ret.tv, &mut max_type, &mut max_row);
-                for arg in args {
-                    collect_var(arg.tv, &mut max_type, &mut max_row);
-                }
-            }
-            Instr::Const { dst, .. } => collect_var(dst.tv, &mut max_type, &mut max_row),
-            Instr::BinOp { dst, lhs, rhs, .. } => {
-                collect_var(dst.tv, &mut max_type, &mut max_row);
-                collect_var(lhs.tv, &mut max_type, &mut max_row);
-                collect_var(rhs.tv, &mut max_type, &mut max_row);
-            }
-            Instr::LoadFunc { dst, sig, .. } => {
-                collect_var(dst.tv, &mut max_type, &mut max_row);
-                collect_func_type_vars(sig, &mut max_type, &mut max_row);
-            }
-            Instr::Ret { src } => collect_var(src.tv, &mut max_type, &mut max_row),
-        }
-    }
+    collect_body_type_vars(&function.body, &mut max_type, &mut max_row);
 
     TypeVarGenerator::new(max_type.saturating_add(1), max_row.saturating_add(1))
 }
@@ -186,9 +205,9 @@ mod tests {
 
     #[test]
     fn program_stores_and_finds_functions() {
-        let mut program = IRProgram::new("main");
+        let mut program = IRProgram::new("main_fn");
         let fun = IRFunction::new(
-            "main",
+            "main_fn",
             vec![Type::Int],
             Type::Int,
             Vec::new(),
@@ -196,15 +215,15 @@ mod tests {
         );
         program.add_function(fun);
 
-        assert!(program.function("main").is_some());
+        assert!(program.function("main_fn").is_some());
         assert!(program.function("missing").is_none());
-        assert_eq!(program.entry, "main");
+        assert_eq!(program.entry, "main_fn");
     }
 
     #[test]
     fn seeded_generator_starts_after_used_function_vars() {
         let fun = IRFunction::new(
-            "main",
+            "main_fn",
             vec![Type::Unknown(TypeVar(5))],
             Type::Unknown(TypeVar(9)),
             Vec::new(),

@@ -59,8 +59,28 @@ Current instruction variants:
 - `BinOp { dst, op, lhs, rhs }`
 - `LoadFunc { dst, name, sig }`
 - `Ret { src }`
+- `If { cond, then_block, then_result, else_block, else_result, dst }`
+- `For { index, bound, acc, init, body, next }`
 
 `LoadFunc` injects function signatures into inference, and `Ret` defines the observable program result.
+
+### 3.1 Structured control flow
+
+`If` and `For` are **combinator instructions**: they carry `Vec<Instr>`
+sub-blocks rather than branching to labels, so the IR stays a tree and typing
+stays syntax-directed (no code-label preconditions, no dataflow fixpoint). Both
+are value-producing:
+
+- `If` merges the two branch results into `dst` with `Equal(dst, then_result)` +
+  `Equal(dst, else_result)`.
+- `For` carries an accumulator: `acc` is seeded from `init` and set to the
+  body's `next` each iteration. The loop invariant is **checked**, not
+  inferred — a plain `Equal(acc, next)`, never a fixpoint. `index` runs
+  `0..bound`.
+
+Every constraint these emit is `Equal`, so the weighted solver is unchanged.
+Restrictions: block-local registers do not escape their block (values leave only
+via `dst`/`acc` or heap stores), and `Ret` is not permitted inside a block.
 
 ## 4. Constraints and Meaning
 
@@ -133,6 +153,15 @@ Error policy:
 
 - Unresolved types are hard errors (`CodegenError::UnresolvedType`).
 - Unsupported targets (`Interface`, `Existential`, `Stack`) are explicit errors.
+
+### 7.1 Build harness
+
+`build::CBuild` (constructed via `from_body` or `from_program`) ties codegen to a
+C toolchain. Its three methods form a progression: `generate()` → C source,
+`compile()` → writes `<dir>/<name>.c` and invokes the compiler (default
+`cc -Wall -O2`), `run()` → runs the binary and returns a `RunReport`
+(stdout/stderr/exit status). Errors unify under `BuildError`
+(codegen / io / non-zero compile).
 
 ## 8. What Is Implemented vs Open
 

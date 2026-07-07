@@ -54,6 +54,9 @@ impl RegisterFile {
     pub fn iter(&self) -> impl Iterator<Item = Reg> + '_ {
         self.registers.iter().copied()
     }
+    pub fn is_empty(&self) -> bool {
+        self.registers.is_empty()
+    }
 
     pub fn len(&self) -> usize {
         self.registers.len()

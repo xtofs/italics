@@ -16,9 +16,9 @@ pub enum Symbol {
 // <:
 // =>
 // t / r
-const ASCII_SYMBOLS: [&'static str; 6] = ["->", ":in:", "<:", "=>", "t", "r"];
+const ASCII_SYMBOLS: [&str; 6] = ["->", ":in:", "<:", "=>", "t", "r"];
 
-const UNICODE_SYMBOLS: [&'static str; 6] = ["→", "∈", "⊆", "↦", "τ", "ρ"];
+const UNICODE_SYMBOLS: [&str; 6] = ["→", "∈", "⊆", "↦", "τ", "ρ"];
 
 const fn symbol_index(symbol: Symbol) -> usize {
     match symbol {

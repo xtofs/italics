@@ -84,6 +84,43 @@ pub enum Instr {
     Ret {
         src: Reg,
     },
+    /// Value-producing conditional; see [`If`].
+    If(If),
+    /// Bounded loop with a loop-carried accumulator; see [`For`].
+    For(For),
+}
+
+/// A nested sub-block that runs for its side effects and *yields* the value in
+/// `result` (the register the block evaluates to).
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub instrs: Vec<Instr>,
+    pub result: Reg,
+}
+
+/// Value-producing conditional. Both blocks run for their side effects; the
+/// branch that executes leaves its result in `dst` (the two branch results are
+/// unified with `dst`, so the merge is a single `Equal` — no phi node, no
+/// fixpoint).
+#[derive(Debug, Clone)]
+pub struct If {
+    pub cond: Reg,
+    pub then_: Block,
+    pub else_: Block,
+    pub dst: Reg,
+}
+
+/// Bounded loop with a loop-carried accumulator. `index` runs `0..bound`. `acc`
+/// starts at `init` and is set to the body's yielded value after each iteration.
+/// The loop invariant `acc = body.result` is *checked* (a plain `Equal`), never
+/// fixpoint-inferred.
+#[derive(Debug, Clone)]
+pub struct For {
+    pub index: Reg,
+    pub bound: Reg,
+    pub acc: Reg,
+    pub init: Reg,
+    pub body: Block,
 }
 
 impl Instr {
@@ -97,6 +134,8 @@ impl Instr {
             Instr::BinOp { dst, .. } => Some(dst),
             Instr::LoadFunc { dst, .. } => Some(dst),
             Instr::Ret { .. } => None,
+            Instr::If(f) => Some(&f.dst),
+            Instr::For(f) => Some(&f.acc),
         }
     }
 }
@@ -105,9 +144,53 @@ impl Instr {
 // load obj.x
 // call f(obj, obj.x)
 
-impl fmt::Display for Instr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Instr {
+    /// Format this instruction, indenting any nested blocks relative to `depth`.
+    fn fmt_at(&self, f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
+        let pad = "    ".repeat(depth + 1);
         match self {
+            Instr::If(instr) => {
+                writeln!(f, "if {} -> {} {{", instr.cond, instr.dst)?;
+                for i in &instr.then_.instrs {
+                    f.write_str(&pad)?;
+                    i.fmt_at(f, depth + 1)?;
+                    f.write_str("\n")?;
+                }
+                writeln!(f, "{}yield {}", pad, instr.then_.result)?;
+                writeln!(f, "{}}} else {{", "    ".repeat(depth))?;
+                for i in &instr.else_.instrs {
+                    f.write_str(&pad)?;
+                    i.fmt_at(f, depth + 1)?;
+                    f.write_str("\n")?;
+                }
+                writeln!(f, "{}yield {}", pad, instr.else_.result)?;
+                write!(f, "{}}}", "    ".repeat(depth))
+            }
+            Instr::For(instr) => {
+                writeln!(
+                    f,
+                    "for {} in 0..{}, acc {} = {} {{",
+                    instr.index, instr.bound, instr.acc, instr.init
+                )?;
+                for i in &instr.body.instrs {
+                    f.write_str(&pad)?;
+                    i.fmt_at(f, depth + 1)?;
+                    f.write_str("\n")?;
+                }
+                writeln!(f, "{}yield {}", pad, instr.body.result)?;
+                write!(f, "{}}}", "    ".repeat(depth))
+            }
+            other => write!(f, "{}", DisplayLeaf(other)),
+        }
+    }
+}
+
+/// Renders the non-control (single-line) instruction forms.
+struct DisplayLeaf<'a>(&'a Instr);
+
+impl fmt::Display for DisplayLeaf<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
             Instr::Load { dst, src, field } => write!(f, "load {} := {}.{}", dst, src, field),
             Instr::Store { dst, field, src } => write!(f, "store {}.{} := {}", dst, field, src),
             Instr::NewObj { dst, fields } => {
@@ -139,6 +222,15 @@ impl fmt::Display for Instr {
                 write!(f, "ldfn {} = @{} : {}", dst, name, Type::Func(sig.clone()))
             }
             Instr::Ret { src } => write!(f, "ret  {}", src),
+            // Control-flow forms are rendered by `Instr::fmt_at`; `DisplayLeaf`
+            // is only ever constructed for the single-line instructions above.
+            Instr::If(_) | Instr::For(_) => unreachable!("control flow uses fmt_at"),
         }
+    }
+}
+
+impl fmt::Display for Instr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.fmt_at(f, 0)
     }
 }

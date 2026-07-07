@@ -608,6 +608,39 @@ impl<'a> Solver<'a> {
                 // The program result is the exit-observable int.
                 vec![Constraint::Equal(src.ty(), Type::Int)]
             }
+
+            Instr::If(f) => {
+                let mut cs = vec![Constraint::Equal(f.cond.ty(), Type::Bool)];
+                for instr in &f.then_.instrs {
+                    cs.extend(self.generate_constraints(instr));
+                }
+                for instr in &f.else_.instrs {
+                    cs.extend(self.generate_constraints(instr));
+                }
+                // Merge: whichever branch runs, its result flows into `dst`.
+                // Pushed after the block constraints so the stable weight-sort
+                // keeps "result defined before merged".
+                cs.push(Constraint::Equal(f.dst.ty(), f.then_.result.ty()));
+                cs.push(Constraint::Equal(f.dst.ty(), f.else_.result.ty()));
+                cs
+            }
+
+            Instr::For(f) => {
+                let mut cs = vec![
+                    Constraint::Equal(f.index.ty(), Type::Int),
+                    Constraint::Equal(f.bound.ty(), Type::Int),
+                    // Accumulator is seeded from `init`.
+                    Constraint::Equal(f.acc.ty(), f.init.ty()),
+                ];
+                for instr in &f.body.instrs {
+                    cs.extend(self.generate_constraints(instr));
+                }
+                // Checked loop invariant: the body's yielded value must have the
+                // same type as the accumulator (a plain `Equal`, not a
+                // fixpoint).
+                cs.push(Constraint::Equal(f.acc.ty(), f.body.result.ty()));
+                cs
+            }
         }
     }
 }

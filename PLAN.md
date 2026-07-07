@@ -5,6 +5,18 @@ This file is the single planning document for upcoming work.
 Architecture and implemented behavior are documented in `ARCHITECTURE.md` and
 `README.md`.
 
+## Landed
+
+- **Code generation** (originally out of scope): a self-contained C backend
+  (`src/codegen.rs`, `emit_c` / `emit_c_program`) lowering inferred types to
+  runnable C. See ARCHITECTURE.md §7.
+- **Structured control flow**: value-producing `If`/`For` combinator blocks
+  (`examples/control.rs`). Loops use the *checked* invariant `Equal(acc, next)`
+  rather than fixpoint inference, keeping the solver linear. See
+  ARCHITECTURE.md §3.1. Next step: loosen the "no `Ret` inside a block" and
+  "block-local registers don't escape" restrictions if a surface language needs
+  them.
+
 ## Active Goals
 
 1. Keep docs concise and avoid duplication.
