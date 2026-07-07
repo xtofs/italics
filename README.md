@@ -15,17 +15,18 @@ From repository root:
 
 ```bash
 cargo test
-cargo run --example codegen
-cargo run --example pipeline
 cargo run --example irbuilder
+cargo run --example pipeline
+cargo run --example functions
+cargo run --example control
 ```
 
-The codegen examples write generated C to:
+The functions examples write generated C to:
 
 ```text
-target/generated.c
-target/generated_program.c
 target/generated_pipeline.c
+target/generated_functions.c
+target/generated_control.c
 ```
 
 Then compile and run it manually:

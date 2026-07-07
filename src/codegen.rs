@@ -291,7 +291,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         let mut emitted_prelude = false;
         if loaded.contains("print_int") {
             out.push_str(
-                "static int64_t print_int(int64_t x) { printf(\"%lld\\n\", (long long)x); return x; }\n",
+                "static int64_t print_int(int64_t x) { printf(\"%lld\\n\", x); return x; }\n",
             );
             emitted_prelude = true;
         }
@@ -717,7 +717,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 }
                 match return_style {
                     ReturnStyle::Main => {
-                        writeln!(out, "printf(\"result: %lld\\n\", (long long){});", src).unwrap();
+                        writeln!(out, "printf(\"result: %lld\\n\", {});", src).unwrap();
                         writeln!(out, "return 0;").unwrap();
                     }
                     ReturnStyle::Function => {
@@ -888,9 +888,7 @@ pub fn emit_c_program(program: &IRProgram) -> Result<String, ProgramCodegenError
 
     let mut emitted_prelude = false;
     if loaded_all.contains("print_int") {
-        out.push_str(
-            "static int64_t print_int(int64_t x) { printf(\"%lld\\n\", (long long)x); return x; }\n",
-        );
+        out.push_str("static int64_t print_int(int64_t x) { printf(\"%lld\\n\", x); return x; }\n");
         emitted_prelude = true;
     }
     if loaded_all.contains("print_bool") {
@@ -917,7 +915,7 @@ pub fn emit_c_program(program: &IRProgram) -> Result<String, ProgramCodegenError
     writeln!(out, "int main(void) {{").unwrap();
     writeln!(out, "    {} result = {}();", entry_ret, entry.name).unwrap();
     if entry_ret == "int64_t" {
-        out.push_str("    printf(\"result: %lld\\n\", (long long)result);\n");
+        out.push_str("    printf(\"result: %lld\\n\", result);\n");
     } else if entry_ret == "bool" {
         out.push_str("    printf(\"result: %s\\n\", result ? \"true\" : \"false\");\n");
     }
