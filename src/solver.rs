@@ -142,7 +142,7 @@ impl<'a> Solver<'a> {
             ));
         }
 
-        for (p1, p2) in f1.params.into_iter().zip(f2.params.into_iter()) {
+        for (p1, p2) in f1.params.into_iter().zip(f2.params) {
             self.unify(p1, p2)?;
         }
 
@@ -161,7 +161,7 @@ impl<'a> Solver<'a> {
         if s1.len() != s2.len() {
             return Err(TypeError::UnificationFailed("stack length mismatch".into()));
         }
-        for (t1, t2) in s1.into_iter().zip(s2.into_iter()) {
+        for (t1, t2) in s1.into_iter().zip(s2) {
             self.unify(t1, t2)?;
         }
         Ok(())
