@@ -20,7 +20,7 @@ const PREAMBLE: &str = "\
 
 // unit type definition and it's value
 typedef struct { char _; } unit_t;
-static const unit_t UNIT = {0};
+static const unit_t __attribute__((unused)) UNIT = {0};
 
 ";
 
@@ -1183,7 +1183,11 @@ mod tests {
 
         assert!(c.contains("static unit_t greet(void)"), "{}", c);
         assert!(c.contains("static unit_t mk_unit(void)"), "{}", c);
-        assert!(c.contains("static const unit_t UNIT = {0};"), "{}", c);
+        assert!(
+            c.contains("static const unit_t __attribute__((unused)) UNIT = {0};"),
+            "{}",
+            c
+        );
         assert!(c.contains("return UNIT;"), "{}", c);
         assert!(!c.contains("return (unit_t){0};"), "{}", c);
     }

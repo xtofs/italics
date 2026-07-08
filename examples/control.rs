@@ -14,11 +14,15 @@ use italics::*;
 fn main() {
     let mut b = InstructionBuilder::default();
 
+    let print_int = b.prelude("print_int");
+
     // sum = for i in 0..10, acc = 0 { acc + i }   => 45
     let ten = b.const_int(10);
     let zero = b.const_int(0);
     let sum = b.for_acc(ten, zero, |b, index, acc| {
-        b.binop(BinOpKind::Add, acc, index)
+        let reg = b.binop(BinOpKind::Add, acc, index);
+        let _ = b.call(print_int, vec![acc]);
+        reg
     });
 
     // pick = if true { 1 } else { 2 }             => 1
@@ -27,7 +31,6 @@ fn main() {
 
     // total = sum + pick                           => 46
     let total = b.binop(BinOpKind::Add, sum, pick);
-    let print_int = b.prelude("print_int");
     let _ = b.call(print_int, vec![total]);
     b.ret(total);
 
@@ -41,5 +44,5 @@ fn main() {
     println!("compiled to {}", compiled.binary.display());
 
     let report = compiled.run().expect("run should succeed");
-    // println!("Program output:\n{}", report.stdout);
+    println!("Program output:\n{}", report.stdout);
 }
