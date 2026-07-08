@@ -4,12 +4,12 @@ use std::fmt::Write as _;
 
 use crate::indenting::IndentedWriter;
 use crate::instructions::Instr;
-use crate::program::{IRFunction, IRProgram, type_var_generator_for_function};
+use crate::program::{Function, Program, type_var_generator_for_function};
 use crate::registers::{RegId, RegisterFile};
 use crate::solver::{Solver, TypeError};
 use crate::types::{FuncType, Type};
 
-/// The fixed runtime preamble: standard includes plus the `unit_t` singleton
+/// The runtime preamble: standard includes plus the `unit_t` singleton
 /// type that [`Type::Unit`] lowers to. An unused file-scope typedef is
 /// warning-clean under `-Wall`, so it is always emitted.
 const PREAMBLE: &str = "\
@@ -45,43 +45,46 @@ impl fmt::Display for CodegenError {
 impl std::error::Error for CodegenError {}
 
 #[derive(Debug)]
-pub enum ProgramCodegenError {
+pub enum CompilerError {
     MissingEntry(String),
     DuplicateFunction(String),
-    Unsupported(String),
+    /// A program-level construct the backend doesn't support (e.g. an entry
+    /// function with parameters). Distinct from [`CodegenError::Unsupported`],
+    /// which is about unsupported *types*.
+    UnsupportedProgram(String),
     Type(TypeError),
     Codegen(CodegenError),
 }
 
-impl fmt::Display for ProgramCodegenError {
+impl fmt::Display for CompilerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProgramCodegenError::MissingEntry(name) => {
+            CompilerError::MissingEntry(name) => {
                 write!(f, "entry function {:?} was not found", name)
             }
-            ProgramCodegenError::DuplicateFunction(name) => {
+            CompilerError::DuplicateFunction(name) => {
                 write!(f, "duplicate function name {:?}", name)
             }
-            ProgramCodegenError::Unsupported(msg) => {
+            CompilerError::UnsupportedProgram(msg) => {
                 write!(f, "unsupported program construct: {}", msg)
             }
-            ProgramCodegenError::Type(err) => write!(f, "type error: {:?}", err),
-            ProgramCodegenError::Codegen(err) => write!(f, "codegen error: {}", err),
+            CompilerError::Type(err) => write!(f, "type error: {:?}", err),
+            CompilerError::Codegen(err) => write!(f, "codegen error: {}", err),
         }
     }
 }
 
-impl std::error::Error for ProgramCodegenError {}
+impl std::error::Error for CompilerError {}
 
-impl From<TypeError> for ProgramCodegenError {
+impl From<TypeError> for CompilerError {
     fn from(value: TypeError) -> Self {
-        ProgramCodegenError::Type(value)
+        CompilerError::Type(value)
     }
 }
 
-impl From<CodegenError> for ProgramCodegenError {
+impl From<CodegenError> for CompilerError {
     fn from(value: CodegenError) -> Self {
-        ProgramCodegenError::Codegen(value)
+        CompilerError::Codegen(value)
     }
 }
 
@@ -103,7 +106,7 @@ struct FnDef {
 
 /// A function's lowered C signature: the mangled symbol name plus the return
 /// and parameter types as C strings. This is the C-level view of an
-/// [`IRFunction`]'s `(name, signature)` — derived once (it needs the solver to
+/// [`Function`]'s `(name, signature)` — derived once (it needs the solver to
 /// lower types and the program to mangle names, neither of which the IR itself
 /// has) and then carried through every emission site.
 struct CSignature {
@@ -372,7 +375,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
 
     fn emit_function_definition(
         &self,
-        function: &IRFunction,
+        function: &Function,
         signatures: &HashMap<String, CSignature>,
     ) -> Result<String, CodegenError> {
         let signature = &signatures[&function.name];
@@ -763,7 +766,7 @@ fn default_return_literal(ret_ctype: &str) -> &'static str {
 /// concrete type from `solver`. Records lower to heap-allocated structs behind
 /// pointers; unresolved register types are an error rather than a silent
 /// default.
-pub fn emit_c(
+pub(crate) fn emit_body(
     body: &[Instr],
     registers: &RegisterFile,
     solver: &Solver,
@@ -771,49 +774,6 @@ pub fn emit_c(
     let mut cg = CodeGen::new(solver);
     cg.ground_registers(registers)?;
     cg.emit(body)
-}
-
-fn solve_function<'a>(
-    function: &IRFunction,
-    tvg: &'a mut crate::variables::TypeVarGenerator,
-) -> Result<Solver<'a>, TypeError> {
-    let mut solver = Solver::new(tvg);
-    let mut constraints = Vec::new();
-
-    let param_regs: Vec<_> = function
-        .registers
-        .iter()
-        .take(function.signature.params.len())
-        .collect();
-    for (reg, param_ty) in param_regs.into_iter().zip(function.signature.params.iter()) {
-        constraints.push(crate::constraints::Constraint::Equal(
-            reg.ty(),
-            param_ty.clone(),
-        ));
-    }
-
-    for instr in &function.body {
-        constraints.extend(solver.generate_constraints(instr));
-    }
-
-    // Bind each `ret` to the declared return type: a returned register must have
-    // it, and a valueless `ret` requires the function to return unit.
-    let ret_ty = (*function.signature.ret).clone();
-    for instr in &function.body {
-        if let Instr::Ret { src } = instr {
-            let returned = match src {
-                Some(r) => r.ty(),
-                None => Type::Unit,
-            };
-            constraints.push(crate::constraints::Constraint::Equal(
-                returned,
-                ret_ty.clone(),
-            ));
-        }
-    }
-
-    solver.solve(&constraints)?;
-    Ok(solver)
 }
 
 fn sanitize_ident(s: &str) -> String {
@@ -838,25 +798,23 @@ fn sanitize_ident(s: &str) -> String {
 /// Emit a full C translation unit for an IR program with multiple internal
 /// function definitions and an explicit entry function.
 ///
-pub fn emit_code(program: &IRProgram) -> Result<String, ProgramCodegenError> {
+pub(crate) fn emit_code(program: &Program) -> Result<String, CompilerError> {
     let mut seen_names = HashSet::new();
     for function in &program.functions {
         if !seen_names.insert(function.name.clone()) {
-            return Err(ProgramCodegenError::DuplicateFunction(
-                function.name.clone(),
-            ));
+            return Err(CompilerError::DuplicateFunction(function.name.clone()));
         }
     }
 
     if !seen_names.contains(&program.entry) {
-        return Err(ProgramCodegenError::MissingEntry(program.entry.clone()));
+        return Err(CompilerError::MissingEntry(program.entry.clone()));
     }
 
     let entry_function = program
         .function(&program.entry)
         .expect("entry was validated to exist");
     if !entry_function.signature.params.is_empty() {
-        return Err(ProgramCodegenError::Unsupported(format!(
+        return Err(CompilerError::UnsupportedProgram(format!(
             "entry function {:?} has {} params; main wrapper currently supports zero-arg entry only",
             entry_function.name,
             entry_function.signature.params.len()
@@ -885,8 +843,11 @@ pub fn emit_code(program: &IRProgram) -> Result<String, ProgramCodegenError> {
     let mut signatures: HashMap<String, CSignature> = HashMap::new();
     for function in &program.functions {
         let mut tvg = type_var_generator_for_function(function);
-        let solver = solve_function(function, &mut tvg)?;
-        let mut cg = CodeGen::with_prefix(&solver, format!("{}_", sanitize_ident(&function.name)));
+        let solved = crate::infer::Inference::for_function(function, &mut tvg).solve(&mut tvg)?;
+        let mut cg = CodeGen::with_prefix(
+            &solved.solver,
+            format!("{}_", sanitize_ident(&function.name)),
+        );
         cg.ground_registers(&function.registers)?;
 
         let c_name = c_names[&function.name].clone();
@@ -921,8 +882,11 @@ pub fn emit_code(program: &IRProgram) -> Result<String, ProgramCodegenError> {
 
     for function in &program.functions {
         let mut tvg = type_var_generator_for_function(function);
-        let solver = solve_function(function, &mut tvg)?;
-        let mut cg = CodeGen::with_prefix(&solver, format!("{}_", sanitize_ident(&function.name)));
+        let solved = crate::infer::Inference::for_function(function, &mut tvg).solve(&mut tvg)?;
+        let mut cg = CodeGen::with_prefix(
+            &solved.solver,
+            format!("{}_", sanitize_ident(&function.name)),
+        );
         cg.ground_registers(&function.registers)?;
         cg.emit_supporting_type_defs(&mut out);
         out.push_str(&cg.emit_function_definition(function, &signatures)?);
@@ -1040,7 +1004,7 @@ mod tests {
     use crate::constraints::Constraint;
     use crate::instructions::BinOpKind;
     use crate::types::{Row, Type};
-    use crate::{CBuild, FunctionBuilder, IRProgram, InstructionBuilder, Solver};
+    use crate::{CBuild, FunctionBuilder, InstructionBuilder, Program, Solver};
     use std::collections::BTreeMap;
 
     /// Solve the builder's body and emit C, mirroring the real pipeline.
@@ -1054,18 +1018,12 @@ mod tests {
     ) -> Result<String, CodegenError> {
         let body = builder.body.clone();
         let registers = std::mem::take(&mut builder.register_file);
-        let mut solver = Solver::new(&mut builder.type_variable_generator);
-
-        let mut constraints = Vec::new();
-        for instr in &body {
-            constraints.extend(solver.generate_constraints(instr));
-        }
-        constraints.extend(extra);
-        solver
-            .solve(&constraints)
-            .expect("constraints should solve");
-
-        emit_c(&body, &registers, &solver)
+        crate::infer::Inference::new(&body, &registers)
+            .seed(extra)
+            .generate_constraints(&mut builder.type_variable_generator)
+            .solve(&mut builder.type_variable_generator)
+            .expect("constraints should solve")
+            .generate_code()
     }
 
     #[test]
@@ -1178,7 +1136,7 @@ mod tests {
         entry.ret(result);
         let entry_fn = entry.finish("main", vec![], Type::Int);
 
-        let mut program = IRProgram::new("main");
+        let mut program = Program::new("main");
         program.add_function(helper_fn);
         program.add_function(entry_fn);
 
@@ -1214,7 +1172,7 @@ mod tests {
         entry.ret(result);
         let entry_fn = entry.finish("main", vec![], Type::Int);
 
-        let mut program = IRProgram::new("main");
+        let mut program = Program::new("main");
         program.add_function(helper_fn);
         program.add_function(entry_fn);
 
@@ -1233,11 +1191,11 @@ mod tests {
         b.ret(n);
         let f = b.finish("other", vec![], Type::Int);
 
-        let mut program = IRProgram::new("main");
+        let mut program = Program::new("main");
         program.add_function(f);
 
         let err = emit_code(&program).expect_err("missing entry must fail");
-        assert!(matches!(err, ProgramCodegenError::MissingEntry(_)));
+        assert!(matches!(err, CompilerError::MissingEntry(_)));
     }
 
     #[test]
@@ -1266,7 +1224,7 @@ mod tests {
         entry.ret(zero);
         let entry_fn = entry.finish("main", vec![], Type::Int);
 
-        let mut program = IRProgram::new("main");
+        let mut program = Program::new("main");
         program.add_function(greet_fn);
         program.add_function(mk_fn);
         program.add_function(entry_fn);
@@ -1287,11 +1245,11 @@ mod tests {
         b.ret_unit();
         let f = b.finish("bad", vec![], Type::Int);
 
-        let mut program = IRProgram::new("bad");
+        let mut program = Program::new("bad");
         program.add_function(f);
 
         let err = emit_code(&program).expect_err("ret_unit in an int fn must fail");
-        assert!(matches!(err, ProgramCodegenError::Type(_)), "{:?}", err);
+        assert!(matches!(err, CompilerError::Type(_)), "{:?}", err);
     }
 
     #[test]
@@ -1319,15 +1277,13 @@ mod tests {
         // give the pipeline a valid solve and inspect the declared type
         let body = b.body.clone();
         let registers = std::mem::take(&mut b.register_file);
-        let mut solver = Solver::new(&mut b.type_variable_generator);
-        let mut constraints = Vec::new();
-        for instr in &body {
-            constraints.extend(solver.generate_constraints(instr));
-        }
-        solver.solve(&constraints).unwrap();
+        let solved = crate::infer::Inference::new(&body, &registers)
+            .generate_constraints(&mut b.type_variable_generator)
+            .solve(&mut b.type_variable_generator)
+            .unwrap();
 
-        assert_eq!(solver.apply(lt.ty()), Type::Bool);
-        let c = emit_c(&body, &registers, &solver).expect("should emit");
+        assert_eq!(solved.solver.apply(lt.ty()), Type::Bool);
+        let c = solved.generate_code().expect("should emit");
         assert!(
             c.contains(&format!("bool {} =", lt)),
             "lt should be bool:\n{}",
@@ -1402,11 +1358,8 @@ mod tests {
         let _sum = b.for_acc(ten, zero, |b, _i, _acc| b.const_bool(true));
 
         let body = b.body.clone();
+        let constraints = crate::infer::constraints_for(&body, &mut b.type_variable_generator);
         let mut solver = Solver::new(&mut b.type_variable_generator);
-        let mut constraints = Vec::new();
-        for instr in &body {
-            constraints.extend(solver.generate_constraints(instr));
-        }
         assert!(
             solver.solve(&constraints).is_err(),
             "mismatched loop invariant (int acc vs bool body) must fail to type-check"
@@ -1467,8 +1420,7 @@ mod tests {
             .expect("If instruction was built")
             .clone();
 
-        let mut solver = Solver::new(&mut b.type_variable_generator);
-        let cs = solver.generate_constraints(&if_instr);
+        let cs = crate::infer::constraints_from_instr(&if_instr, &mut b.type_variable_generator);
         assert_eq!(cs.len(), 5, "unexpected If constraint shape: {:?}", cs);
     }
 
@@ -1491,8 +1443,12 @@ mod tests {
         let report = CBuild::from_builder("italics_smoke", b)
             .expect("should build")
             .dir(std::env::temp_dir().join("italics_smoke_build"))
+            .generate()
+            .expect("generate")
+            .compile()
+            .expect("compile")
             .run()
-            .expect("generate/compile/run should succeed");
+            .expect("run should succeed");
         let stdout = report.stdout;
         assert!(stdout.contains("43"), "expected 43, got: {}", stdout);
     }

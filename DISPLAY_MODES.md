@@ -1,7 +1,7 @@
 # Display Modes
 
-`italics` supports two display styles for symbols used in type rendering,
-constraints, and debug output.
+`italics` supports two display styles for type,
+constraints, and debug output. Either ASCII only or using unicode for greek letters and mathematical symbols.
 
 ## ASCII Mode (Default)
 

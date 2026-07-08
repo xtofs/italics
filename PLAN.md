@@ -8,8 +8,8 @@ Architecture and implemented behavior are documented in `ARCHITECTURE.md` and
 ## Landed
 
 - **Code generation** (originally out of scope): a self-contained C backend
-  (`src/codegen.rs`, `emit_c` / `emit_c_program`) lowering inferred types to
-  runnable C. See ARCHITECTURE.md §7.
+  (`src/codegen.rs`) lowering inferred types to runnable C, driven by the staged
+  `infer` and `CBuild` pipelines. See ARCHITECTURE.md §7.
 - **Structured control flow**: value-producing `If`/`For` combinator blocks
   (`examples/control.rs`). Loops use the *checked* invariant `Equal(acc, next)`
   rather than fixpoint inference, keeping the solver linear. See
@@ -32,8 +32,7 @@ Architecture and implemented behavior are documented in `ARCHITECTURE.md` and
 
 2. Code generation ergonomics
    - Add richer diagnostics in `CodegenError` (instruction/register context).
-   - Make `examples/codegen.rs` output path independent from invocation directory.
-   - Add small utility entry point for stable `emit_c` workflows.
+   - Make example output paths independent from the invocation directory.
 
 3. Testing and validation
    - Add targeted tests for subtype edge cases and existential behavior decisions.

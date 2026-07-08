@@ -1,10 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 
+use crate::TypeVarGenerator;
 use crate::constraints::Constraint;
-use crate::instructions::{BinOpKind, Value};
 use crate::types::{Existential, FuncType, Row, Type};
 use crate::variables::TypeVar;
-use crate::{Instr, TypeVarGenerator};
 
 #[derive(Debug)]
 pub struct Solver<'a> {
@@ -539,115 +538,6 @@ impl<'a> Solver<'a> {
             (None, None) => Ok(()),
         }
     }
-
-    pub fn generate_constraints(&mut self, instr: &Instr) -> Vec<Constraint> {
-        match instr {
-            Instr::Load { dst, src, field } => vec![
-                Constraint::RowHasField(src.ty(), field.clone()),
-                Constraint::RowFieldType(src.ty(), field.clone(), dst.ty()),
-            ],
-
-            Instr::Store { dst, field, src } => vec![
-                Constraint::RowHasField(dst.ty(), field.clone()),
-                Constraint::RowFieldType(dst.ty(), field.clone(), src.ty()),
-            ],
-
-            Instr::NewObj { dst, fields } => {
-                // Create a fresh row tail type variable
-                let tail_tv = self.tvg.fresh_row();
-
-                let mut row = Row {
-                    fields: BTreeMap::new(),
-                    tail: Some(tail_tv),
-                };
-
-                for (name, reg) in fields {
-                    row.fields.insert(name.clone(), reg.ty());
-                }
-
-                vec![Constraint::Equal(dst.ty(), Type::Record(row))]
-            }
-
-            Instr::Call { func, args, ret } => {
-                let func_ty = Type::Func(FuncType {
-                    params: args.iter().map(|r| r.ty()).collect(),
-                    ret: Box::new(ret.ty()),
-                    stack: None,
-                });
-
-                vec![Constraint::Equal(func.ty(), func_ty)]
-            }
-
-            Instr::Const { dst, value } => {
-                let ty = match value {
-                    Value::Int(_) => Type::Int,
-                    Value::Bool(_) => Type::Bool,
-                    Value::Unit => Type::Unit,
-                };
-                vec![Constraint::Equal(dst.ty(), ty)]
-            }
-
-            Instr::BinOp { dst, op, lhs, rhs } => {
-                // operands are always ints; the result is bool for comparisons
-                let dst_ty = match op {
-                    BinOpKind::Lt => Type::Bool,
-                    _ => Type::Int,
-                };
-                vec![
-                    Constraint::Equal(lhs.ty(), Type::Int),
-                    Constraint::Equal(rhs.ty(), Type::Int),
-                    Constraint::Equal(dst.ty(), dst_ty),
-                ]
-            }
-
-            Instr::LoadFunc { dst, name: _, sig } => {
-                // The runtime function's declared signature enters the
-                // constraint system and unifies with the func type a later
-                // Call synthesizes, so argument/return types flow both ways.
-                vec![Constraint::Equal(dst.ty(), Type::Func(sig.clone()))]
-            }
-
-            Instr::Ret { .. } => {
-                // The returned value's type flows from the body; it is bound to
-                // the function's declared return type by the caller
-                // (`solve_function`), not here.
-                vec![]
-            }
-
-            Instr::If(f) => {
-                let mut cs = vec![Constraint::Equal(f.cond.ty(), Type::Bool)];
-                for instr in &f.then_.instrs {
-                    cs.extend(self.generate_constraints(instr));
-                }
-                for instr in &f.else_.instrs {
-                    cs.extend(self.generate_constraints(instr));
-                }
-                // Merge: whichever branch runs, its result flows into `dst`.
-                // Pushed after the block constraints so the stable weight-sort
-                // keeps "result defined before merged".
-                cs.push(Constraint::Equal(f.dst.ty(), f.then_.result.ty()));
-                cs.push(Constraint::Equal(f.dst.ty(), f.else_.result.ty()));
-                cs
-            }
-
-            Instr::For(f) => {
-                let mut cs = vec![
-                    Constraint::Equal(f.index.ty(), Type::Int),
-                    Constraint::Equal(f.bound.ty(), Type::Int),
-                    // Accumulator is seeded from `init`.
-                    Constraint::Equal(f.acc.ty(), f.init.ty()),
-                ];
-                for instr in &f.body.instrs {
-                    cs.extend(self.generate_constraints(instr));
-                }
-                // Checked loop invariant: the body's yielded value must have the
-                // same type as the accumulator (a plain `Equal`, not a
-                // fixpoint).
-                cs.push(Constraint::Equal(f.acc.ty(), f.body.result.ty()));
-                cs
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -662,14 +552,11 @@ mod tests {
         extra: Vec<Constraint>,
     ) -> Result<Solver<'_>, TypeError> {
         let body = builder.body.clone();
-        let mut solver = Solver::new(&mut builder.type_variable_generator);
-
-        let mut constraints = Vec::new();
-        for instr in &body {
-            constraints.extend(solver.generate_constraints(instr));
-        }
+        let mut constraints =
+            crate::infer::constraints_for(&body, &mut builder.type_variable_generator);
         constraints.extend(extra);
 
+        let mut solver = Solver::new(&mut builder.type_variable_generator);
         solver.solve(&constraints)?;
         Ok(solver)
     }

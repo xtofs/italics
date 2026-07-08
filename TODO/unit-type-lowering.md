@@ -22,14 +22,14 @@ reg4(reg3);   // call reg5 := reg4(reg3), reg5 : unit — result dropped
 
 ## The observation that prompted this
 
-`unit_t` currently shows up in three spots (the call decl is *not* one of them —
+`unit_t` currently shows up in three spots (the call decl is _not_ one of them —
 the dropped result is already handled by the bare `reg4(reg3);`):
 
 1. the fn-pointer typedef: `typedef unit_t (*fn0)(int64_t);`
 2. the prelude body: `return (unit_t){0};`
 3. the prelude declaration: `static unit_t print_int(int64_t x)`
 
-Since nothing ever *keeps* a unit value today, we could instead lower `Unit → void`:
+Since nothing ever _keeps_ a unit value today, we could instead lower `Unit → void`:
 
 ```c
 static void print_int(int64_t x) { printf("%lld\n", (long long)x); }
@@ -45,22 +45,22 @@ C's `void` is **not a value type** — you can't declare, store, pass, or return
 `unit_t` (a real one-value type) can. The following lower with **zero special
 cases** under `unit_t` and become **illegal C** under `void`:
 
-| situation | `unit_t` | `void` |
-|---|---|---|
-| a **used** call result (`let r = call(print_int,[x]); …r…`) | `unit_t r = print_int(x);` ✓ | `void r = …;` ✗ |
-| a unit **struct field** (`new { u: someUnit }`) | `unit_t u;` ✓ | `void u;` ✗ |
-| a unit **parameter** (`f : (unit) -> int`) | `int f(unit_t x)` ✓ | `f(void x)` ✗ |
-| **returning** unit from an IR function | `return u;` ✓ | `return;` (+ can't name the value) |
+| situation                                                   | `unit_t`                     | `void`                             |
+| ----------------------------------------------------------- | ---------------------------- | ---------------------------------- |
+| a **used** call result (`let r = call(print_int,[x]); …r…`) | `unit_t r = print_int(x);` ✓ | `void r = …;` ✗                    |
+| a unit **struct field** (`new { u: someUnit }`)             | `unit_t u;` ✓                | `void u;` ✗                        |
+| a unit **parameter** (`f : (unit) -> int`)                  | `int f(unit_t x)` ✓          | `f(void x)` ✗                      |
+| **returning** unit from an IR function                      | `return u;` ✓                | `return;` (+ can't name the value) |
 
 Under `unit_t`, unit is "a value like any other" and the register/codegen model
 stays uniform — no branches anywhere. Under `void`, unit is "the absence of a
 value," so every place it could be materialized needs an "if void, skip/error"
 branch, **and** you need a guard (the `ground_registers` unit-check that was
-prototyped then deleted) to *prohibit* keeping a unit value — otherwise you
+prototyped then deleted) to _prohibit_ keeping a unit value — otherwise you
 silently emit broken C the moment someone does.
 
 None of the four rows above is exercised today (unit only ever appears as an
-immediately-dropped prelude call result), so `void` genuinely works *right now* —
+immediately-dropped prelude call result), so `void` genuinely works _right now_ —
 it's a YAGNI-vs-fidelity call, not a correctness one.
 
 ## Recommendation / when to revisit
@@ -78,13 +78,14 @@ it's a YAGNI-vs-fidelity call, not a correctness one.
   - re-add a `ground_registers` guard: a register whose type is `Unit`/void is a
     `CodegenError` (enforces "unit never escapes").
 
+
 ## Related follow-ups
 
 - ~~`const_unit` / a way to construct a unit **value** in the IR.~~ **Done** —
-  `IRBuilder::const_unit()` → `unit_t reg = (unit_t){0};`.
-- ~~User-defined unit-returning `IRFunction`s.~~ **Done** — `Ret { src: Option<Reg> }`
-  with `IRBuilder::ret_unit()`; a valueless `ret` lowers to `return (unit_t){0};` and
-  is bound to the function's declared return type in `solve_function` (so `ret_unit()`
+  `InstructionBuilder::const_unit()` → `unit_t reg = UNIT;`.
+- ~~User-defined unit-returning `Function`s.~~ **Done** — `Ret { src: Option<Reg> }`
+  with `InstructionBuilder::ret_unit()`; a valueless `ret` lowers to `return UNIT;` and
+  is bound to the function's declared return type in `Inference::for_function` (so `ret_unit()`
   in a non-unit function is a type error). No `void` entry-wrapper handling was needed:
   because unit is a value, `unit_t` functions just return the value like any other.
 

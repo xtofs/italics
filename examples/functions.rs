@@ -2,26 +2,29 @@ use italics::*;
 
 /// Demonstrate program-level codegen with internal IR functions.
 ///
-/// This example focuses on `IRFunction`, `IRProgram`, and `emit_c_program`,
-/// then uses the `CBuild` harness to generate, compile, and run the C.
+/// This example focuses on `Function`, `Program`, and the staged `CBuild`
+/// pipeline (`generate()` → `compile()` → `run()`).
 fn main() {
     let helper = build_helper();
-    let entry = build_entry("entry");
+    let entry = build_main("entry");
 
-    let mut program = IRProgram::new("entry");
+    let mut program = Program::new("entry");
     program.add_function(helper);
     program.add_function(entry);
 
-    let build = CBuild::from_program("generated_functions", &program);
+    let source = CBuild::from_program("generated_functions", &program)
+        .generate()
+        .expect("program codegen should succeed");
+    println!("\nSource generated to {}", source.source_path().display());
 
-    let report = build.run().expect("generate/compile/run should succeed");
+    let compiled = source.compile().expect("compile should succeed");
+    println!("Compiled to {}", compiled.binary.display());
 
-    println!("\nSource generated to {}", build.source_path().display());
-    println!("\nCompiled to {}", build.binary_path().display());
+    let report = compiled.run().expect("run should succeed");
     println!("\nProgram output:\n{}", report.stdout);
 }
 
-fn build_helper() -> IRFunction {
+fn build_helper() -> Function {
     // fn hello(a,b) -> a * 7 + b * 2
     let mut b = FunctionBuilder::new("helper", [Type::Int, Type::Int], Type::Int);
 
@@ -39,7 +42,7 @@ fn build_helper() -> IRFunction {
     b.build()
 }
 
-fn build_entry(name: impl Into<String>) -> IRFunction {
+fn build_main(name: impl Into<String>) -> Function {
     let mut b = FunctionBuilder::new(name, [], Type::Int);
 
     let arg1 = b.const_int(10);

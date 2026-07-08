@@ -6,17 +6,24 @@ This document is the canonical technical reference for the repository.
 
 The project has four layers:
 
-1. IR construction (`IRBuilder` + `Instr`)
-2. Constraint generation (`Solver::generate_constraints`)
+1. IR construction (`InstructionBuilder` / `FunctionBuilder` + `Instr`)
+2. Constraint generation (`infer::constraints_for`)
 3. Constraint solving / type inference (`Solver`)
-4. Code emission (`codegen::emit_c`)
+4. Code emission (`Solved::generate_code`)
 
-High-level flow:
+The inference-to-C flow is a **type-state pipeline** in `src/infer.rs`, where each
+stage carries its result as a public field and consumes itself into the next:
 
-1. Build a register-based IR program.
-2. Generate constraints from each instruction.
-3. Solve constraints to infer register types.
-4. Lower solved types and instructions into runnable C.
+```
+Inference::new(body, registers)
+    .generate_constraints(tvg)   // -> Constraints { constraints }
+    .solve(tvg)?                 // -> Solved { solver }
+    .generate_code()?            // -> C source (String)
+```
+
+The build/run flow is the analogous outer pipeline in `src/build.rs`:
+`CBuild::…generate()? -> Source -> .compile()? -> Compiled -> .run()? -> RunReport`.
+Consuming stages mean a mis-ordered call is a compile error and nothing re-runs.
 
 ## 2. Core Data Model
 
@@ -31,6 +38,7 @@ High-level flow:
 `Type` includes:
 
 - `Int`, `Bool`
+- `Unit` — the singleton type (one value); lowers to a one-byte C `unit_t`
 - `Ptr(Box<Type>)`
 - `Func(FuncType)`
 - `Record(Row)`
@@ -44,8 +52,11 @@ High-level flow:
 ### 2.3 Registers and Builder
 
 - Registers (`Reg`) carry an id and a type variable handle.
-- `IRBuilder` allocates registers and appends instructions.
-- Builder is intentionally untyped: all type structure comes from constraint generation.
+- `InstructionBuilder` allocates registers and appends instructions.
+- `FunctionBuilder<N>` wraps an `InstructionBuilder` with a typed, compile-time-arity
+  signature (it reserves `reg0..regN` as parameters) and reuses the whole
+  instruction-emitting surface via `Deref`.
+- Builders are intentionally untyped: all type structure comes from constraint generation.
 
 ## 3. Instruction Set
 
@@ -54,29 +65,29 @@ Current instruction variants:
 - `Load { dst, src, field }`
 - `Store { dst, field, src }`
 - `NewObj { dst, fields }`
-- `Call { func, args, ret }`
-- `Const { dst, value }`
+- `Call { func, args, ret: Option<Reg> }` — a `None` `ret` is a void call (no result register)
+- `Const { dst, value }` — `value` is `Int` / `Bool` / `Unit`
 - `BinOp { dst, op, lhs, rhs }`
 - `LoadFunc { dst, name, sig }`
-- `Ret { src }`
-- `If { cond, then_block, then_result, else_block, else_result, dst }`
-- `For { index, bound, acc, init, body, next }`
+- `Ret { src: Option<Reg> }` — a valueless `ret` returns unit
+- `If(If)` / `For(For)` — control flow; see §3.1
 
-`LoadFunc` injects function signatures into inference, and `Ret` defines the observable program result.
+`LoadFunc` injects function signatures into inference. Each `ret` is bound to the
+enclosing function's declared return type (by `Inference::for_function`).
 
 ### 3.1 Structured control flow
 
-`If` and `For` are **combinator instructions**: they carry `Vec<Instr>`
-sub-blocks rather than branching to labels, so the IR stays a tree and typing
-stays syntax-directed (no code-label preconditions, no dataflow fixpoint). Both
-are value-producing:
+`If` and `For` are **combinator instructions** (newtype variants over the `If` /
+`For` structs): they carry `Block { instrs, result }` sub-blocks rather than
+branching to labels, so the IR stays a tree and typing stays syntax-directed (no
+code-label preconditions, no dataflow fixpoint). Both are value-producing:
 
-- `If` merges the two branch results into `dst` with `Equal(dst, then_result)` +
-  `Equal(dst, else_result)`.
-- `For` carries an accumulator: `acc` is seeded from `init` and set to the
-  body's `next` each iteration. The loop invariant is **checked**, not
-  inferred — a plain `Equal(acc, next)`, never a fixpoint. `index` runs
-  `0..bound`.
+- `If { cond, then_: Block, else_: Block, dst }` merges the two branch results
+  into `dst` with `Equal(dst, then_.result)` + `Equal(dst, else_.result)`.
+- `For { index, bound, acc, init, body: Block }` carries an accumulator: `acc`
+  is seeded from `init` and set to `body.result` each iteration. The loop
+  invariant is **checked**, not inferred — a plain `Equal(acc, body.result)`,
+  never a fixpoint. `index` runs `0..bound`.
 
 Every constraint these emit is `Equal`, so the weighted solver is unchanged.
 Restrictions: block-local registers do not escape their block (values leave only
@@ -101,7 +112,10 @@ Together they model `load`/`store` access without conflating shape and type cons
 
 ## 5. Solver Design
 
-`Solver` owns substitutions and uses the shared `TypeVarGenerator`.
+Constraint **generation** lives in `src/infer.rs` as free functions
+(`constraints_from_instr` / `constraints_for`), which need only the
+`TypeVarGenerator` (to mint a `NewObj`'s fresh row tail). `Solver` is the
+**solving** engine: it owns substitutions and uses the shared `TypeVarGenerator`.
 
 Key behavior:
 
@@ -132,35 +146,46 @@ Type and constraint displays, plus generated-code comments, share this policy.
 
 ## 7. Code Generation
 
-`emit_c(body, registers, solver)` lowers inferred programs to C.
+A single solved body is lowered by `Solved::generate_code` (the tail of the inner
+pipeline). A whole multi-function `Program` is assembled by `codegen::emit_code`
+(crate-private, driven by `CBuild::from_program`): it mangles names, emits a
+preamble, per-function prototypes, the prelude, per-function definitions (each
+solved via `Inference::for_function`), and a `main` wrapper.
 
 Type lowering:
 
 - `Int` -> `int64_t`
 - `Bool` -> `bool`
+- `Unit` -> `unit_t` (a one-byte singleton struct; the `UNIT` macro is its value)
 - `Ptr(t)` -> `<t>*`
 - `Record(row)` -> `struct Rn *` (heap object; `NewObj` uses `calloc`)
 - `Func(ft)` -> interned function-pointer typedef (`fnN`)
 
 Struct shapes are structurally deduplicated. Open row tails are closed at codegen time and noted in comments.
 
-Runtime functions:
+Runtime functions come from the `prelude` table (`src/prelude.rs`), the single
+source of each function's name, signature, and C body:
 
-- Known prelude names (`print_int`, `print_bool`) are emitted inline.
-- Unknown loaded functions receive `extern` prototypes.
+- Prelude names (`print_int`, `print_bool`) are pulled in via `builder.prelude(name)`
+  and their C bodies emitted when loaded.
+- Other loaded functions receive `extern` prototypes.
 
 Error policy:
 
-- Unresolved types are hard errors (`CodegenError::UnresolvedType`).
-- Unsupported targets (`Interface`, `Existential`, `Stack`) are explicit errors.
+- `CodegenError` — per-body lowering: unresolved types (`UnresolvedType`) and
+  unsupported *types* (`Unsupported`: `Interface` / `Existential` / `Stack`, …).
+- `CompilerError` — whole-program assembly: `MissingEntry`, `DuplicateFunction`,
+  `UnsupportedProgram` (an unsupported program *construct*), plus `Type(TypeError)`
+  and `Codegen(CodegenError)` wrapping the lower-layer failures.
 
 ### 7.1 Build harness
 
-`build::CBuild` (constructed via `from_body` or `from_program`) ties codegen to a
-C toolchain. Its three methods form a progression: `generate()` → C source,
-`compile()` → writes `<dir>/<name>.c` and invokes the compiler (default
-`cc -Wall -O2`), `run()` → runs the binary and returns a `RunReport`
-(stdout/stderr/exit status). Errors unify under `BuildError`
+`build::CBuild` ties codegen to a C toolchain as a type-state pipeline. Construct
+with `from_body` (a solved body), `from_program` (a `Program`), or `from_builder`
+(runs the whole inner pipeline for you), tweak `dir`/`cc`/`flags`, then advance:
+`generate()` → `Source` (the C, still in memory), `Source::compile()` → `Compiled`
+(writes `<dir>/<name>.c` and invokes `cc -Wall -O2`), `Compiled::run()` →
+`RunReport` (stdout/stderr/exit status). Errors unify under `BuildError`
 (codegen / io / non-zero compile).
 
 ## 8. What Is Implemented vs Open

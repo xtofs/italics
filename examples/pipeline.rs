@@ -30,20 +30,17 @@ fn main() {
 
     println!("\n== Stage 2: Generate Constraints ==");
     let body = b.body.clone();
-    let mut solver = Solver::new(&mut b.type_variable_generator);
-    let mut constraints = Vec::new();
-    for instr in &body {
-        constraints.extend(solver.generate_constraints(instr));
-    }
-    for c in &constraints {
+    let constraints = Inference::new(&body, &b.register_file)
+        .generate_constraints(&mut b.type_variable_generator);
+    for c in &constraints.constraints {
         println!("    {}", c);
     }
 
     println!("\n== Stage 3: Solve Constraints ==");
-    solver
-        .solve(&constraints)
+    let solved = constraints
+        .solve(&mut b.type_variable_generator)
         .expect("pipeline example should solve");
-    for (v, ty) in &solver.substitutions {
+    for (v, ty) in &solved.solver.substitutions {
         println!(
             "    {} {} {}",
             v,
@@ -54,11 +51,11 @@ fn main() {
 
     println!("\n== Stage 4: Inferred Register Types ==");
     for reg in b.register_file.iter() {
-        println!("    {}: {}", reg, solver.apply(reg.ty()));
+        println!("    {}: {}", reg, solved.solver.apply(reg.ty()));
     }
 
     println!("\n== Stage 5: Emit C ==\n");
-    let c = emit_c(&body, &b.register_file, &solver).expect("codegen should succeed");
+    let c = solved.generate_code().expect("codegen should succeed");
     println!("{}", c);
 
     let target = Path::new("target");

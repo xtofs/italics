@@ -31,12 +31,15 @@ fn main() {
     let _ = b.call(print_int, vec![total]);
     b.ret(total);
 
-    let build = CBuild::from_builder("generated_control", b).expect("program should type-check");
+    let source = CBuild::from_builder("generated_control", b)
+        .expect("program should type-check")
+        .generate()
+        .expect("codegen should succeed");
+    println!("source generated to {}", source.source_path().display());
 
-    let report = build.run().expect("compile and run should succeed");
+    let compiled = source.compile().expect("compile should succeed");
+    println!("compiled to {}", compiled.binary.display());
 
-    println!("source generated to {}", build.source_path().display());
-    println!("compiled to {}", build.binary_path().display());
-
+    let report = compiled.run().expect("run should succeed");
     println!("Program output:\n{}", report.stdout);
 }

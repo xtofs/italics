@@ -104,7 +104,7 @@
     - `Type`
     - `Row`
     - `Constraint`
-    - IR (`Instr`, `IRBuilder.body`).
+    - IR (`Instr`, `InstructionBuilder.body`).
 
 - **Unit tests**
   - Small programs:

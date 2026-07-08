@@ -34,21 +34,23 @@ target/generated_control.c
 `functions` and `control` also compile and run the generated C automatically
 through `CBuild`.
 
-Display formatting options are documented in [Display Modes](DISPLAY_MODES.md).
+Display formatting options for printing types and constraints are documented in [Display Modes](DISPLAY_MODES.md).
 
 ## Main Components
 
 - IR builder and instructions: `src/builder.rs`, `src/instructions.rs`
 - Types and row representation: `src/types.rs`, `src/variables.rs`
+- Constraint generation and inference pipeline: `src/infer.rs`
 - Constraint solver: `src/solver.rs`, `src/constraints.rs`
 - Display/symbol formatting: `src/display.rs`
-- C code generator: `src/codegen.rs`
+- C code generator: `src/codegen.rs`; runtime prelude table: `src/prelude.rs`
+- Build/compile/run harness: `src/build.rs`
 
 ## Examples
 
 - `examples/irbuilder.rs`: end-to-end single-function inference and C emission demo
 - `examples/pipeline.rs`: stage-by-stage pipeline demo (IR -> constraints -> solving -> inferred types -> C)
-- `examples/functions.rs`: program-level API demo (`IRProgram` + `emit_c_program`) with internal function calls and parameter passing
+- `examples/functions.rs`: program-level demo (`Program` + the staged `CBuild` pipeline) with internal function calls and parameter passing
 - `examples/control.rs`: structured control-flow demo (`if`/`for`) lowered to C
 
 ## Documentation

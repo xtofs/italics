@@ -1,9 +1,10 @@
 use crate::instructions::{BinOpKind, Block, For, If, Instr, Value};
-use crate::program::IRFunction;
+use crate::program::Function;
 use crate::registers::{Reg, RegGenerator, RegisterFile};
 use crate::types::{FuncType, Type};
 use crate::variables::TypeVarGenerator;
 
+/// builder for a
 #[derive(Debug)]
 pub struct FunctionBuilder<const N: usize> {
     name: String,
@@ -44,7 +45,7 @@ impl<const N: usize> FunctionBuilder<N> {
         self.param_regs
     }
 
-    pub fn build(self) -> IRFunction {
+    pub fn build(self) -> Function {
         self.ir
             .finish(self.name, self.params.into_iter().collect(), self.ret)
     }
@@ -263,7 +264,7 @@ impl InstructionBuilder {
 
     /// Finalize this builder into a named IR function with an explicit
     /// signature. This is the first step toward intra-IR function definitions.
-    pub fn finish(mut self, name: impl Into<String>, params: Vec<Type>, ret: Type) -> IRFunction {
+    pub fn finish(mut self, name: impl Into<String>, params: Vec<Type>, ret: Type) -> Function {
         // Reserve predictable parameter registers [reg0..regN) even when the
         // caller did not allocate them explicitly (`FunctionBuilder` always does,
         // but a bare `InstructionBuilder` finished with a signature may not have).
@@ -271,7 +272,7 @@ impl InstructionBuilder {
             let _ = self.reg();
         }
 
-        IRFunction::new(name, params, ret, self.body, self.register_file)
+        Function::new(name, params, ret, self.body, self.register_file)
     }
 }
 

@@ -39,28 +39,24 @@ fn main() {
     }
 
     let body = b.body.clone();
-    let mut solver = Solver::new(&mut b.type_variable_generator);
 
-    let mut constraints = Vec::new();
-    for instr in &body {
-        constraints.extend(solver.generate_constraints(instr));
-    }
-
+    let constraints = Inference::new(&body, &b.register_file)
+        .generate_constraints(&mut b.type_variable_generator);
     println!("\nConstraints:");
-    for c in &constraints {
+    for c in &constraints.constraints {
         println!("    {}", c);
     }
 
-    solver
-        .solve(&constraints)
+    let solved = constraints
+        .solve(&mut b.type_variable_generator)
         .expect("program should type-check");
 
     println!("\nInferred register types:");
     for reg in b.register_file.iter() {
-        println!("    {}: {}", reg, solver.apply(reg.ty()));
+        println!("    {}: {}", reg, solved.solver.apply(reg.ty()));
     }
 
-    let c = emit_c(&body, &b.register_file, &solver).expect("codegen should succeed");
+    let c = solved.generate_code().expect("codegen should succeed");
 
     println!("\nGenerated C:\n");
     println!("{}", c);

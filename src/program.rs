@@ -4,14 +4,37 @@ use crate::types::{FuncType, Type};
 use crate::variables::{TypeVar, TypeVarGenerator};
 
 #[derive(Debug)]
-pub struct IRFunction {
+pub struct Program {
+    pub functions: Vec<Function>,
+    pub entry: String,
+}
+
+impl Program {
+    pub fn new(entry: impl Into<String>) -> Self {
+        Self {
+            functions: Vec::new(),
+            entry: entry.into(),
+        }
+    }
+
+    pub fn add_function(&mut self, function: Function) {
+        self.functions.push(function);
+    }
+
+    pub fn function(&self, name: &str) -> Option<&Function> {
+        self.functions.iter().find(|f| f.name == name)
+    }
+}
+
+#[derive(Debug)]
+pub struct Function {
     pub name: String,
     pub signature: FuncType,
     pub body: Vec<Instr>,
     pub registers: RegisterFile,
 }
 
-impl IRFunction {
+impl Function {
     pub fn new(
         name: impl Into<String>,
         params: Vec<Type>,
@@ -29,29 +52,6 @@ impl IRFunction {
             body,
             registers,
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct IRProgram {
-    pub functions: Vec<IRFunction>,
-    pub entry: String,
-}
-
-impl IRProgram {
-    pub fn new(entry: impl Into<String>) -> Self {
-        Self {
-            functions: Vec::new(),
-            entry: entry.into(),
-        }
-    }
-
-    pub fn add_function(&mut self, function: IRFunction) {
-        self.functions.push(function);
-    }
-
-    pub fn function(&self, name: &str) -> Option<&IRFunction> {
-        self.functions.iter().find(|f| f.name == name)
     }
 }
 
@@ -186,7 +186,7 @@ fn collect_body_type_vars(body: &[Instr], max_type: &mut u32, max_row: &mut u32)
 ///
 /// This keeps solver-introduced variables disjoint from variables already
 /// present in the IR, even when a function is solved independently.
-pub fn type_var_generator_for_function(function: &IRFunction) -> TypeVarGenerator {
+pub fn type_var_generator_for_function(function: &Function) -> TypeVarGenerator {
     let mut max_type = 0_u32;
     let mut max_row = 0_u32;
 
@@ -209,8 +209,8 @@ mod tests {
 
     #[test]
     fn program_stores_and_finds_functions() {
-        let mut program = IRProgram::new("main_fn");
-        let fun = IRFunction::new(
+        let mut program = Program::new("main_fn");
+        let fun = Function::new(
             "main_fn",
             vec![Type::Int],
             Type::Int,
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn seeded_generator_starts_after_used_function_vars() {
-        let fun = IRFunction::new(
+        let fun = Function::new(
             "main_fn",
             vec![Type::Unknown(TypeVar(5))],
             Type::Unknown(TypeVar(9)),
