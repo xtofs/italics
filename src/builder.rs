@@ -222,11 +222,11 @@ impl InstructionBuilder {
         self.body.push(Instr::If(If {
             cond,
             then_: Block {
-                instrs: then_instrs,
+                instructions: then_instrs,
                 result: then_result,
             },
             else_: Block {
-                instrs: else_instrs,
+                instructions: else_instrs,
                 result: else_result,
             },
             dst,
@@ -255,7 +255,7 @@ impl InstructionBuilder {
             acc,
             init,
             body: Block {
-                instrs,
+                instructions: instrs,
                 result: next,
             },
         }));

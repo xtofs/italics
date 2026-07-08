@@ -97,7 +97,7 @@ pub enum Instr {
 /// `result` (the register the block evaluates to).
 #[derive(Debug, Clone)]
 pub struct Block {
-    pub instrs: Vec<Instr>,
+    pub instructions: Vec<Instr>,
     pub result: Reg,
 }
 
@@ -154,14 +154,14 @@ impl Instr {
         match self {
             Instr::If(instr) => {
                 writeln!(f, "if {} -> {} {{", instr.cond, instr.dst)?;
-                for i in &instr.then_.instrs {
+                for i in &instr.then_.instructions {
                     f.write_str(&pad)?;
                     i.fmt_at(f, depth + 1)?;
                     f.write_str("\n")?;
                 }
                 writeln!(f, "{}yield {}", pad, instr.then_.result)?;
                 writeln!(f, "{}}} else {{", "    ".repeat(depth))?;
-                for i in &instr.else_.instrs {
+                for i in &instr.else_.instructions {
                     f.write_str(&pad)?;
                     i.fmt_at(f, depth + 1)?;
                     f.write_str("\n")?;
@@ -175,7 +175,7 @@ impl Instr {
                     "for {} in 0..{}, acc {} = {} {{",
                     instr.index, instr.bound, instr.acc, instr.init
                 )?;
-                for i in &instr.body.instrs {
+                for i in &instr.body.instructions {
                     f.write_str(&pad)?;
                     i.fmt_at(f, depth + 1)?;
                     f.write_str("\n")?;

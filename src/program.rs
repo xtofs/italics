@@ -168,14 +168,14 @@ fn collect_body_type_vars(body: &[Instr], max_type: &mut u32, max_row: &mut u32)
                 for reg in [&f.cond, &f.then_.result, &f.else_.result, &f.dst] {
                     collect_var(reg.tv, max_type, max_row);
                 }
-                collect_body_type_vars(&f.then_.instrs, max_type, max_row);
-                collect_body_type_vars(&f.else_.instrs, max_type, max_row);
+                collect_body_type_vars(&f.then_.instructions, max_type, max_row);
+                collect_body_type_vars(&f.else_.instructions, max_type, max_row);
             }
             Instr::For(f) => {
                 for reg in [&f.index, &f.bound, &f.acc, &f.init, &f.body.result] {
                     collect_var(reg.tv, max_type, max_row);
                 }
-                collect_body_type_vars(&f.body.instrs, max_type, max_row);
+                collect_body_type_vars(&f.body.instructions, max_type, max_row);
             }
         }
     }

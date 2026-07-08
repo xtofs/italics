@@ -92,10 +92,10 @@ pub fn constraints_from_instr(instr: &Instr, tvg: &mut TypeVarGenerator) -> Vec<
 
         Instr::If(f) => {
             let mut cs = vec![Constraint::Equal(f.cond.ty(), Type::Bool)];
-            for instr in &f.then_.instrs {
+            for instr in &f.then_.instructions {
                 cs.extend(constraints_from_instr(instr, tvg));
             }
-            for instr in &f.else_.instrs {
+            for instr in &f.else_.instructions {
                 cs.extend(constraints_from_instr(instr, tvg));
             }
             // Merge: whichever branch runs, its result flows into `dst`. Pushed
@@ -113,7 +113,7 @@ pub fn constraints_from_instr(instr: &Instr, tvg: &mut TypeVarGenerator) -> Vec<
                 // Accumulator is seeded from `init`.
                 Constraint::Equal(f.acc.ty(), f.init.ty()),
             ];
-            for instr in &f.body.instrs {
+            for instr in &f.body.instructions {
                 cs.extend(constraints_from_instr(instr, tvg));
             }
             // Checked loop invariant: the body's yielded value must have the same

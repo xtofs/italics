@@ -18,6 +18,7 @@ const PREAMBLE: &str = "\
 #include <stdio.h>
 #include <stdlib.h>
 
+// unit type definition and it's value
 typedef struct { char _; } unit_t;
 static const unit_t UNIT = {0};
 
@@ -302,40 +303,59 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         // Extern prototypes for LoadFunc names not defined by the prelude.
         self.emit_externs(body, &mut out, &HashMap::new())?;
 
-        // Registers referenced as operands somewhere — a defined register that
-        // is never an operand is dead and must not be declared (it would warn
-        // under -Wall).
-        let used = used_registers(body);
-
-        let mut saw_ret = false;
-        {
-            let mut w = IndentedWriter::new(&mut out, "    ");
-            writeln!(w, "int main(void) {{").unwrap();
-            w.indent();
-            for instr in body {
-                self.emit_instr(
-                    instr,
-                    &mut w,
-                    &used,
-                    &mut saw_ret,
-                    ReturnStyle::Main,
-                    &HashMap::new(),
-                )?;
-            }
-            if !saw_ret {
-                writeln!(w, "return 0;").unwrap();
-            }
-            w.dedent();
-            writeln!(w, "}}").unwrap();
-        }
+        // The body *is* `main`: it prints its result and exits 0.
+        self.emit_function_c(
+            &mut out,
+            "int main(void)",
+            body,
+            ReturnStyle::Main,
+            "return 0;",
+            &HashMap::new(),
+        )?;
 
         Ok(out)
+    }
+
+    /// Emit one C function — `<header> { <body> }` at translation-unit scope,
+    /// indented, with `no_ret` appended when the body has no top-level `Ret`.
+    /// Shared by the `main` wrapper (single body) and every `static` definition.
+    fn emit_function_c(
+        &self,
+        out: &mut String,
+        header: &str,
+        body: &[Instr],
+        return_style: ReturnStyle,
+        no_ret: &str,
+        signatures: &HashMap<String, CSignature>,
+    ) -> Result<(), CodegenError> {
+        // A defined register that is never an operand is dead and must not be
+        // declared (it would warn under -Wall).
+        let used = used_registers(body);
+        let mut saw_ret = false;
+        let mut w = IndentedWriter::new(out, "    ");
+        writeln!(w, "{} {{", header).unwrap();
+        w.indent();
+        for instr in body {
+            self.emit_instr(instr, &mut w, &used, &mut saw_ret, return_style, signatures)?;
+        }
+        if !saw_ret {
+            writeln!(w, "{}", no_ret).unwrap();
+        }
+        w.dedent();
+        writeln!(w, "}}").unwrap();
+        Ok(())
     }
 
     fn emit_supporting_type_defs(&self, out: &mut String) {
         // Forward-declare every struct tag so typedefs and struct fields can
         // refer to any struct regardless of emission order.
         if !self.structs.is_empty() {
+            writeln!(
+                out,
+                "// declaration of structs representing record types in the program"
+            )
+            .unwrap();
+
             for s in &self.structs {
                 writeln!(out, "struct {};", self.struct_name(s.id)).unwrap();
             }
@@ -343,6 +363,10 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         }
 
         // Function-pointer typedefs (before struct defs, which may use them).
+        if !self.fns.is_empty() {
+            writeln!(out, "// Function-pointer typedefs").unwrap();
+        }
+
         for fd in &self.fns {
             writeln!(
                 out,
@@ -360,7 +384,9 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         if !self.fns.is_empty() {
             out.push('\n');
         }
-
+        if !self.structs.is_empty() {
+            writeln!(out, "// struct definitions").unwrap();
+        }
         for s in &self.structs {
             writeln!(out, "struct {} {{", self.struct_name(s.id)).unwrap();
             for (name, cty) in &s.fields {
@@ -409,7 +435,6 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 .join(", ")
         };
 
-        let used = used_registers(body);
         let mut dst_ids: HashSet<RegId> = HashSet::new();
         for_each_instr(body, &mut |instr| {
             if let Some(r) = instr.dst() {
@@ -428,32 +453,16 @@ impl<'a, 'b> CodeGen<'a, 'b> {
             }
         }
 
-        let mut saw_ret = false;
-        {
-            let mut w = IndentedWriter::new(&mut out, "    ");
-            writeln!(
-                w,
-                "static {} {}({}) {{",
-                signature.ret, signature.name, params
-            )
-            .unwrap();
-            w.indent();
-            for instr in body {
-                self.emit_instr(
-                    instr,
-                    &mut w,
-                    &used,
-                    &mut saw_ret,
-                    ReturnStyle::Function,
-                    signatures,
-                )?;
-            }
-            if !saw_ret {
-                writeln!(w, "return {};", default_return_literal(&signature.ret)).unwrap();
-            }
-            w.dedent();
-            writeln!(w, "}}").unwrap();
-        }
+        let header = format!("static {} {}({})", signature.ret, signature.name, params);
+        let no_ret = format!("return {};", default_return_literal(&signature.ret));
+        self.emit_function_c(
+            &mut out,
+            &header,
+            body,
+            ReturnStyle::Function,
+            &no_ret,
+            signatures,
+        )?;
         out.push('\n');
         Ok(out)
     }
@@ -475,6 +484,10 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 ordered.push((name.as_str(), sig));
             }
         });
+
+        if !ordered.is_empty() {
+            writeln!(out, "// IR defined functions").unwrap();
+        }
 
         let mut seen: Vec<&str> = Vec::new();
         for (name, sig) in ordered {
@@ -662,14 +675,14 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 writeln!(out, "{} {};", self.ctype(f.dst.id), f.dst).unwrap();
                 writeln!(out, "if ({}) {{", f.cond).unwrap();
                 out.indent();
-                for i in &f.then_.instrs {
+                for i in &f.then_.instructions {
                     self.emit_instr(i, out, used, saw_ret, return_style, signatures)?;
                 }
                 writeln!(out, "{} = {};", f.dst, f.then_.result).unwrap();
                 out.dedent();
                 writeln!(out, "}} else {{").unwrap();
                 out.indent();
-                for i in &f.else_.instrs {
+                for i in &f.else_.instructions {
                     self.emit_instr(i, out, used, saw_ret, return_style, signatures)?;
                 }
                 writeln!(out, "{} = {};", f.dst, f.else_.result).unwrap();
@@ -692,7 +705,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 )
                 .unwrap();
                 out.indent();
-                for i in &f.body.instrs {
+                for i in &f.body.instructions {
                     self.emit_instr(i, out, used, saw_ret, return_style, signatures)?;
                 }
                 writeln!(
@@ -797,7 +810,6 @@ fn sanitize_ident(s: &str) -> String {
 
 /// Emit a full C translation unit for an IR program with multiple internal
 /// function definitions and an explicit entry function.
-///
 pub(crate) fn emit_code(program: &Program) -> Result<String, CompilerError> {
     let mut seen_names = HashSet::new();
     for function in &program.functions {
@@ -914,10 +926,10 @@ fn for_each_instr<'a>(body: &'a [Instr], f: &mut impl FnMut(&'a Instr)) {
         f(instr);
         match instr {
             Instr::If(i) => {
-                for_each_instr(&i.then_.instrs, f);
-                for_each_instr(&i.else_.instrs, f);
+                for_each_instr(&i.then_.instructions, f);
+                for_each_instr(&i.else_.instructions, f);
             }
-            Instr::For(i) => for_each_instr(&i.body.instrs, f),
+            Instr::For(i) => for_each_instr(&i.body.instructions, f),
             _ => {}
         }
     }
@@ -986,6 +998,9 @@ fn loaded_func_names(body: &[Instr]) -> std::collections::HashSet<String> {
 /// translation unit stays warning-clean under `-Wall`.
 fn emit_prelude(loaded: &HashSet<String>, out: &mut String) {
     let mut any = false;
+
+    writeln!(out, "// prelude functions").unwrap();
+
     for f in crate::prelude::PRELUDE {
         if loaded.contains(f.name) {
             out.push_str(f.code);
