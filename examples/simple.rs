@@ -40,8 +40,7 @@ fn main() {
 
     let body = b.body.clone();
 
-    let constraints = Inference::new(&body, &b.register_file)
-        .generate_constraints(&mut b.type_variable_generator);
+    let constraints = Inference::new(&body, &b.register_file).generate_constraints(&mut b.type_variable_generator);
     println!("\nConstraints:");
     for c in &constraints.constraints {
         println!("    {}", c);

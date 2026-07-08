@@ -36,14 +36,7 @@ impl fmt::Display for Constraint {
                 write!(fmt, "{} {} {}", f, symbol(Symbol::RowMembershipOperator), r)
             }
             Constraint::RowFieldType(r, f, t) => {
-                write!(
-                    fmt,
-                    "{}:{} {} {}",
-                    f,
-                    t,
-                    symbol(Symbol::RowMembershipOperator),
-                    r
-                )
+                write!(fmt, "{}:{} {} {}", f, t, symbol(Symbol::RowMembershipOperator), r)
             }
             Constraint::Subtype(a, b) => {
                 write!(fmt, "{} {} {}", a, symbol(Symbol::SubtypeOperator), b)

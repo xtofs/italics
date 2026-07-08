@@ -35,8 +35,7 @@ fn main() {
     print_stage_header("== Stage 2: Generate Constraints ==");
 
     let body = b.body.clone();
-    let constraints = Inference::new(&body, &b.register_file)
-        .generate_constraints(&mut b.type_variable_generator);
+    let constraints = Inference::new(&body, &b.register_file).generate_constraints(&mut b.type_variable_generator);
     for c in &constraints.constraints {
         println!("    {}", c);
     }

@@ -26,10 +26,7 @@ impl<'a> Solver<'a> {
     }
 
     pub fn resolve(&self, var: TypeVar) -> Type {
-        self.substitutions
-            .get(&var)
-            .cloned()
-            .unwrap_or(Type::Unknown(var))
+        self.substitutions.get(&var).cloned().unwrap_or(Type::Unknown(var))
     }
 
     pub fn unify(&mut self, a: Type, b: Type) -> Result<(), TypeError> {
@@ -48,11 +45,9 @@ impl<'a> Solver<'a> {
             (Type::Record(r1), Type::Record(r2)) => self.unify_row(r1, r2),
             (Type::Interface(r1), Type::Interface(r2)) => self.unify_row(r1, r2),
 
-            (Type::Record(_), Type::Interface(_)) | (Type::Interface(_), Type::Record(_)) => {
-                Err(TypeError::UnificationFailed(
-                    "record/interface mismatch; use Subtype constraint".into(),
-                ))
-            }
+            (Type::Record(_), Type::Interface(_)) | (Type::Interface(_), Type::Record(_)) => Err(
+                TypeError::UnificationFailed("record/interface mismatch; use Subtype constraint".into()),
+            ),
 
             (Type::Stack(s1), Type::Stack(s2)) => self.unify_stack(s1, s2),
 
@@ -108,13 +103,7 @@ impl<'a> Solver<'a> {
     fn occurs_in(&self, tv: TypeVar, ty: &Type) -> bool {
         match ty {
             // chase substitutions so indirect cycles are caught too
-            Type::Unknown(v) => {
-                *v == tv
-                    || self
-                        .substitutions
-                        .get(v)
-                        .is_some_and(|bound| self.occurs_in(tv, bound))
-            }
+            Type::Unknown(v) => *v == tv || self.substitutions.get(v).is_some_and(|bound| self.occurs_in(tv, bound)),
             Type::Ptr(inner) => self.occurs_in(tv, inner),
             Type::Func(f) => {
                 f.params.iter().any(|t| self.occurs_in(tv, t))
@@ -137,9 +126,7 @@ impl<'a> Solver<'a> {
 
     fn unify_func(&mut self, f1: FuncType, f2: FuncType) -> Result<(), TypeError> {
         if f1.params.len() != f2.params.len() {
-            return Err(TypeError::UnificationFailed(
-                "function arity mismatch".into(),
-            ));
+            return Err(TypeError::UnificationFailed("function arity mismatch".into()));
         }
 
         for (p1, p2) in f1.params.into_iter().zip(f2.params) {
@@ -472,9 +459,7 @@ impl<'a> Solver<'a> {
             Type::Func(f) => Type::Func(FuncType {
                 params: f.params.into_iter().map(|t| self.apply(t)).collect(),
                 ret: Box::new(self.apply(*f.ret)),
-                stack: f
-                    .stack
-                    .map(|s| s.into_iter().map(|t| self.apply(t)).collect()),
+                stack: f.stack.map(|s| s.into_iter().map(|t| self.apply(t)).collect()),
             }),
             Type::Record(row) => Type::Record(self.apply_row(row)),
             Type::Interface(row) => Type::Interface(self.apply_row(row)),
@@ -499,12 +484,7 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn check_row_field_type(
-        &mut self,
-        row_ty: Type,
-        name: String,
-        field_ty: Type,
-    ) -> Result<(), TypeError> {
+    fn check_row_field_type(&mut self, row_ty: Type, name: String, field_ty: Type) -> Result<(), TypeError> {
         // Only the field's type is constrained here; requiring the field to
         // exist is `RowHasField`'s job (paired with this for field access).
         // If the field is not present the constraint is vacuously satisfied.
@@ -528,9 +508,7 @@ impl<'a> Solver<'a> {
         }
 
         match (record.tail, interface.tail) {
-            (Some(obj_tail), Some(iface_tail)) => {
-                self.unify(Type::Unknown(obj_tail), Type::Unknown(iface_tail))
-            }
+            (Some(obj_tail), Some(iface_tail)) => self.unify(Type::Unknown(obj_tail), Type::Unknown(iface_tail)),
             (Some(_), None) => Ok(()),
             (None, Some(_)) => Err(TypeError::UnificationFailed(
                 "interface expects open row but object is closed".into(),
@@ -547,13 +525,9 @@ mod tests {
 
     /// Generate constraints for the builder's body (plus any extras) and
     /// solve them, returning the solver for inspection.
-    fn solve_with(
-        builder: &mut InstructionBuilder,
-        extra: Vec<Constraint>,
-    ) -> Result<Solver<'_>, TypeError> {
+    fn solve_with(builder: &mut InstructionBuilder, extra: Vec<Constraint>) -> Result<Solver<'_>, TypeError> {
         let body = builder.body.clone();
-        let mut constraints =
-            crate::infer::constraints_for(&body, &mut builder.type_variable_generator);
+        let mut constraints = crate::infer::constraints_for(&body, &mut builder.type_variable_generator);
         constraints.extend(extra);
 
         let mut solver = Solver::new(&mut builder.type_variable_generator);
@@ -590,10 +564,7 @@ mod tests {
         assert!(row.tail.unwrap().is_row());
 
         // the new field's type is the load destination's type
-        assert_eq!(
-            solver.apply(row.fields["y"].clone()),
-            solver.apply(r_y.ty())
-        );
+        assert_eq!(solver.apply(row.fields["y"].clone()), solver.apply(r_y.ty()));
     }
 
     #[test]
@@ -621,10 +592,7 @@ mod tests {
 
         let row = as_record(solver.apply(obj.ty()));
         assert!(row.fields.contains_key("z"));
-        assert_eq!(
-            solver.apply(row.fields["z"].clone()),
-            solver.apply(r_z.ty())
-        );
+        assert_eq!(solver.apply(row.fields["z"].clone()), solver.apply(r_z.ty()));
     }
 
     #[test]
@@ -637,20 +605,13 @@ mod tests {
 
         let solver = solve_with(
             &mut b,
-            vec![Constraint::RowFieldType(
-                obj.ty(),
-                "y".to_string(),
-                Type::Int,
-            )],
+            vec![Constraint::RowFieldType(obj.ty(), "y".to_string(), Type::Int)],
         )
         .expect("field-type constraint on absent field should be vacuous");
 
         let row = as_record(solver.apply(obj.ty()));
         assert!(row.fields.contains_key("x"));
-        assert!(
-            !row.fields.contains_key("y"),
-            "RowFieldType must not create the field"
-        );
+        assert!(!row.fields.contains_key("y"), "RowFieldType must not create the field");
     }
 
     #[test]
@@ -660,17 +621,11 @@ mod tests {
         let r_x = b.reg();
         let obj = b.new_obj(vec![("x", r_x)]);
 
-        let solver = solve_with(
-            &mut b,
-            vec![Constraint::RowHasField(obj.ty(), "y".to_string())],
-        )
-        .expect("presence constraint should extend the open row");
+        let solver = solve_with(&mut b, vec![Constraint::RowHasField(obj.ty(), "y".to_string())])
+            .expect("presence constraint should extend the open row");
 
         let row = as_record(solver.apply(obj.ty()));
-        assert!(
-            row.fields.contains_key("y"),
-            "RowHasField must create the field"
-        );
+        assert!(row.fields.contains_key("y"), "RowHasField must create the field");
     }
 
     #[test]
@@ -774,8 +729,7 @@ mod tests {
         let r_z = b.reg();
         let obj2 = b.new_obj(vec![("y", r_y2), ("z", r_z)]);
 
-        let solver = solve_with(&mut b, vec![Constraint::Equal(obj1.ty(), obj2.ty())])
-            .expect("open rows should unify");
+        let solver = solve_with(&mut b, vec![Constraint::Equal(obj1.ty(), obj2.ty())]).expect("open rows should unify");
 
         for obj in [obj1, obj2] {
             let row = as_record(solver.apply(obj.ty()));
@@ -821,10 +775,7 @@ mod tests {
             .unify(Type::Unknown(obj_tv), closed)
             .expect("binding should succeed");
 
-        let result = solver.solve(&[Constraint::RowHasField(
-            Type::Unknown(obj_tv),
-            "y".to_string(),
-        )]);
+        let result = solver.solve(&[Constraint::RowHasField(Type::Unknown(obj_tv), "y".to_string())]);
         assert!(matches!(result, Err(TypeError::UnificationFailed(_))));
     }
 

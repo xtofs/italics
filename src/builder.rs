@@ -46,8 +46,7 @@ impl<const N: usize> FunctionBuilder<N> {
     }
 
     pub fn build(self) -> Function {
-        self.ir
-            .finish(self.name, self.params.into_iter().collect(), self.ret)
+        self.ir.finish(self.name, self.params.into_iter().collect(), self.ret)
     }
 }
 
@@ -88,10 +87,7 @@ impl InstructionBuilder {
 
     pub fn new_obj(&mut self, fields: Vec<(impl Into<String>, Reg)>) -> Reg {
         let dst = self.reg();
-        let fields = fields
-            .into_iter()
-            .map(|(name, reg)| (name.into(), reg))
-            .collect();
+        let fields = fields.into_iter().map(|(name, reg)| (name.into(), reg)).collect();
         self.body.push(Instr::NewObj { dst, fields });
         dst
     }
@@ -158,8 +154,7 @@ impl InstructionBuilder {
     /// pulling its signature from the [`prelude`](crate::prelude) table so the
     /// caller can't get it wrong. Panics if `name` is not a prelude function.
     pub fn prelude(&mut self, name: &str) -> Reg {
-        let f = crate::prelude::get(name)
-            .unwrap_or_else(|| panic!("unknown prelude function {:?}", name));
+        let f = crate::prelude::get(name).unwrap_or_else(|| panic!("unknown prelude function {:?}", name));
         let dst = self.reg();
         self.body.push(Instr::LoadFunc {
             dst,
@@ -238,12 +233,7 @@ impl InstructionBuilder {
     /// the induction variable (`0..bound`) and the current accumulator, and
     /// returns the register holding the accumulator's next value. The final
     /// accumulator register is returned to the caller.
-    pub fn for_acc(
-        &mut self,
-        bound: Reg,
-        init: Reg,
-        body_f: impl FnOnce(&mut Self, Reg, Reg) -> Reg,
-    ) -> Reg {
+    pub fn for_acc(&mut self, bound: Reg, init: Reg, body_f: impl FnOnce(&mut Self, Reg, Reg) -> Reg) -> Reg {
         // Allocate index/acc up front so the body can reference them; `reg`
         // only allocates a register, it emits no instruction.
         let index = self.reg();

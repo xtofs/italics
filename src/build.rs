@@ -118,9 +118,7 @@ impl<'a> CBuild<'a> {
 
     /// Build from a whole [`Program`] (solved internally per function).
     pub fn from_program(name: impl Into<String>, program: &'a Program) -> Self {
-        Self::with_generator(name, move || {
-            emit_program_code(program).map_err(BuildError::from)
-        })
+        Self::with_generator(name, move || emit_program_code(program).map_err(BuildError::from))
     }
 
     /// Build from an [`InstructionBuilder`], running the whole inference →
@@ -140,10 +138,7 @@ impl<'a> CBuild<'a> {
         Ok(CBuild::with_generator(name, move || Ok(source.clone())))
     }
 
-    fn with_generator(
-        name: impl Into<String>,
-        generate: impl Fn() -> Result<String, BuildError> + 'a,
-    ) -> Self {
+    fn with_generator(name: impl Into<String>, generate: impl Fn() -> Result<String, BuildError> + 'a) -> Self {
         Self {
             config: Config {
                 name: name.into(),
@@ -279,15 +274,8 @@ mod tests {
             .expect("build")
             .generate()
             .expect("generate");
-        assert!(
-            src.source.contains("int main(void)"),
-            "missing main:\n{}",
-            src.source
-        );
-        assert_eq!(
-            src.source_path(),
-            std::path::Path::new("target/build_test_gen.c")
-        );
+        assert!(src.source.contains("int main(void)"), "missing main:\n{}", src.source);
+        assert_eq!(src.source_path(), std::path::Path::new("target/build_test_gen.c"));
     }
 
     #[test]
