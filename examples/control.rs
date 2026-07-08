@@ -34,6 +34,10 @@ fn main() {
     let _ = b.call(print_int, vec![total]);
     b.ret(total);
 
+    for i in b.body.iter() {
+        println!("{}", i);
+    }
+
     let source = CBuild::from_builder("generated_control", b)
         .expect("program should type-check")
         .generate()
