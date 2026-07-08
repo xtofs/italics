@@ -41,5 +41,5 @@ fn main() {
     println!("compiled to {}", compiled.binary.display());
 
     let report = compiled.run().expect("run should succeed");
-    println!("Program output:\n{}", report.stdout);
+    // println!("Program output:\n{}", report.stdout);
 }

@@ -223,6 +223,8 @@ impl Source {
             .arg(&binary)
             .output()?;
 
+        eprintln!("{}", String::from_utf8_lossy(&output.stderr).into_owned());
+
         if !output.status.success() {
             return Err(BuildError::Compile {
                 status: output.status,

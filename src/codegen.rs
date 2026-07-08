@@ -208,11 +208,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
     /// Lower an IR function's `(name, signature)` into its C signature, applying
     /// the solver to each parameter/return type and interning any records or
     /// function pointers they mention. `name` is the already-mangled C symbol.
-    fn lower_signature(
-        &mut self,
-        name: String,
-        signature: &FuncType,
-    ) -> Result<CSignature, CodegenError> {
+    fn lower_signature(&mut self, name: String, signature: &FuncType) -> Result<CSignature, CodegenError> {
         let mut params = Vec::with_capacity(signature.params.len());
         for param in &signature.params {
             let ty = self.solver.apply(param.clone());
@@ -224,11 +220,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
     }
 
     /// get or add the described struct to the struct index
-    fn intern_struct(
-        &mut self,
-        fields: Vec<(String, String)>,
-        closed_from: Option<String>,
-    ) -> usize {
+    fn intern_struct(&mut self, fields: Vec<(String, String)>, closed_from: Option<String>) -> usize {
         if let Some(&id) = self.struct_index.get(&fields) {
             return id;
         }
@@ -414,11 +406,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         let mut out = String::new();
         self.emit_externs(body, &mut out, signatures)?;
 
-        let param_regs: Vec<_> = function
-            .registers
-            .iter()
-            .take(signature.params.len())
-            .collect();
+        let param_regs: Vec<_> = function.registers.iter().take(signature.params.len()).collect();
         if param_regs.len() != signature.params.len() {
             return Err(CodegenError::Unsupported(format!(
                 "function {} expects {} parameters but only {} registers exist for parameter binding",
@@ -575,14 +563,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 writeln!(out, "{} {} = {};", self.ctype(dst.id), dst, lit).unwrap();
             }
             Instr::NewObj { dst, fields } => {
-                writeln!(
-                    out,
-                    "{} {} = calloc(1, sizeof *{});",
-                    self.ctype(dst.id),
-                    dst,
-                    dst
-                )
-                .unwrap();
+                writeln!(out, "{} {} = calloc(1, sizeof *{});", self.ctype(dst.id), dst, dst).unwrap();
                 for (name, reg) in fields {
                     writeln!(out, "{}->{} = {};", dst, name, reg).unwrap();
                 }
@@ -594,42 +575,36 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 writeln!(out, "{}->{} = {};", dst, field, src).unwrap();
             }
             Instr::BinOp { dst, op, lhs, rhs } => {
-                writeln!(
-                    out,
-                    "{} {} = {} {} {};",
-                    self.ctype(dst.id),
-                    dst,
-                    lhs,
-                    op.symbol(),
-                    rhs
-                )
-                .unwrap();
+                writeln!(out, "{} {} = {} {} {};", self.ctype(dst.id), dst, lhs, op.symbol(), rhs).unwrap();
             }
             Instr::LoadFunc { dst, name, .. } => {
                 // Resolve a call to another in-program function to its mangled
                 // C symbol; otherwise the name is an extern and used verbatim.
-                let lowered = signatures
-                    .get(name)
-                    .map(|s| s.name.as_str())
-                    .unwrap_or(name);
+                let lowered = signatures.get(name).map(|s| s.name.as_str()).unwrap_or(name);
                 writeln!(out, "{} {} = {};", self.ctype(dst.id), dst, lowered).unwrap();
             }
             Instr::Call { func, args, ret } => {
                 let args: Vec<String> = args.iter().map(|r| format!("{}", r)).collect();
-                if registers.contains(&ret.id) {
-                    writeln!(
-                        out,
-                        "{} {} = {}({});",
-                        self.ctype(ret.id),
-                        ret,
-                        func,
-                        args.join(", ")
-                    )
-                    .unwrap();
+                // if registers.contains(&ret.id) {
+                let unused = if registers.contains(&ret.id) {
+                    ""
                 } else {
-                    // result discarded — emit the call for its side effect only
-                    writeln!(out, "{}({});", func, args.join(", ")).unwrap();
-                }
+                    " __attribute__((unused))"
+                };
+                writeln!(
+                    out,
+                    "{} {}{}= {}({});",
+                    self.ctype(ret.id),
+                    ret,
+                    unused,
+                    func,
+                    args.join(", ")
+                )
+                .unwrap();
+                // } else {
+                //     // result discarded — emit the call for its side effect only
+                //     writeln!(out, "{}({});", func, args.join(", ")).unwrap();
+                // }
             }
             Instr::If(f) => {
                 // `dst` is hoisted: declared before the `if`, assigned at the
@@ -708,13 +683,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
     ) -> Result<(), Error> {
         match instr {
             Instr::If(f) => {
-                writeln!(
-                    out,
-                    "// if {} -> {}: {}",
-                    f.cond,
-                    f.dst,
-                    self.solver.apply(f.dst.ty())
-                )?;
+                writeln!(out, "// if {} -> {}: {}", f.cond, f.dst, self.solver.apply(f.dst.ty()))?;
             }
             Instr::For(f) => {
                 writeln!(
@@ -728,13 +697,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
             }
             _ => {
                 if let Some(dst) = instr.dst() {
-                    writeln!(
-                        out,
-                        "// {} // {}: {}",
-                        instr,
-                        dst,
-                        self.solver.apply(dst.ty())
-                    )?;
+                    writeln!(out, "// {} // {}: {}", instr, dst, self.solver.apply(dst.ty()))?;
                 } else {
                     writeln!(out, "// {}", instr)?;
                 }
@@ -766,11 +729,13 @@ fn emit_c_main(entry_c_name: &str, entry_ret_ctype: &str, out: &mut String) {
     match entry_ret_ctype {
         "int64_t" => {
             writeln!(out, "    int64_t result = {}();", entry_c_name).unwrap();
-            out.push_str("    printf(\"result: %lld\\n\", result);\n");
+            writeln!(out, "    printf(\"result: %lld\\n\", result);").unwrap();
+            writeln!(out).unwrap();
         }
         "bool" => {
             writeln!(out, "    bool result = {}();", entry_c_name).unwrap();
-            out.push_str("    printf(\"result: %s\\n\", result ? \"true\" : \"false\");\n");
+            writeln!(out, "    printf(\"result: %s\\n\", result ? \"true\" : \"false\");").unwrap();
+            writeln!(out).unwrap();
         }
         _ => {
             writeln!(out, "    {}();", entry_c_name).unwrap();
@@ -784,11 +749,7 @@ fn emit_c_main(entry_c_name: &str, entry_ret_ctype: &str, out: &mut String) {
 /// concrete type from `solver`. Records lower to heap-allocated structs behind
 /// pointers; unresolved register types are an error rather than a silent
 /// default.
-pub(crate) fn emit_body(
-    body: &[Instr],
-    registers: &RegisterFile,
-    solver: &Solver,
-) -> Result<String, CodegenError> {
+pub(crate) fn emit_body(body: &[Instr], registers: &RegisterFile, solver: &Solver) -> Result<String, CodegenError> {
     let mut cg = CodeGen::new(solver);
     cg.ground_registers(registers)?;
     cg.emit(body)
@@ -827,9 +788,7 @@ pub(crate) fn emit_program_code(program: &Program) -> Result<String, CompilerErr
         return Err(CompilerError::MissingEntry(program.entry.clone()));
     }
 
-    let entry_function = program
-        .function(&program.entry)
-        .expect("entry was validated to exist");
+    let entry_function = program.function(&program.entry).expect("entry was validated to exist");
     if !entry_function.signature.params.is_empty() {
         return Err(CompilerError::UnsupportedProgram(format!(
             "entry function {:?} has {} params; main wrapper currently supports zero-arg entry only",
@@ -861,10 +820,7 @@ pub(crate) fn emit_program_code(program: &Program) -> Result<String, CompilerErr
     for function in &program.functions {
         let mut tvg = type_var_generator_for_function(function);
         let solved = crate::infer::Inference::for_function(function, &mut tvg).solve(&mut tvg)?;
-        let mut cg = CodeGen::with_prefix(
-            &solved.solver,
-            format!("{}_", sanitize_ident(&function.name)),
-        );
+        let mut cg = CodeGen::with_prefix(&solved.solver, format!("{}_", sanitize_ident(&function.name)));
         cg.ground_registers(&function.registers)?;
 
         let c_name = c_names[&function.name].clone();
@@ -879,14 +835,7 @@ pub(crate) fn emit_program_code(program: &Program) -> Result<String, CompilerErr
     // regardless of definition order.
     for function in &program.functions {
         let sig = &signatures[&function.name];
-        writeln!(
-            out,
-            "static {} {}({});",
-            sig.ret,
-            sig.name,
-            sig.param_list()
-        )
-        .unwrap();
+        writeln!(out, "static {} {}({});", sig.ret, sig.name, sig.param_list()).unwrap();
     }
     out.push('\n');
 
@@ -900,10 +849,7 @@ pub(crate) fn emit_program_code(program: &Program) -> Result<String, CompilerErr
     for function in &program.functions {
         let mut tvg = type_var_generator_for_function(function);
         let solved = crate::infer::Inference::for_function(function, &mut tvg).solve(&mut tvg)?;
-        let mut cg = CodeGen::with_prefix(
-            &solved.solver,
-            format!("{}_", sanitize_ident(&function.name)),
-        );
+        let mut cg = CodeGen::with_prefix(&solved.solver, format!("{}_", sanitize_ident(&function.name)));
         cg.ground_registers(&function.registers)?;
         cg.emit_supporting_type_defs(&mut out);
         out.push_str(&cg.emit_function_definition(function, &signatures)?);
@@ -1023,10 +969,7 @@ mod tests {
         emit_with(builder, Vec::new())
     }
 
-    fn emit_with(
-        builder: &mut InstructionBuilder,
-        extra: Vec<Constraint>,
-    ) -> Result<String, CodegenError> {
+    fn emit_with(builder: &mut InstructionBuilder, extra: Vec<Constraint>) -> Result<String, CodegenError> {
         let body = builder.body.clone();
         let registers = std::mem::take(&mut builder.register_file);
         crate::infer::Inference::new(&body, &registers)
@@ -1076,11 +1019,7 @@ mod tests {
             "identical shapes must share one struct:\n{}",
             c
         );
-        assert!(
-            !c.contains("struct R1 {"),
-            "no second struct expected:\n{}",
-            c
-        );
+        assert!(!c.contains("struct R1 {"), "no second struct expected:\n{}", c);
     }
 
     #[test]
@@ -1273,8 +1212,8 @@ mod tests {
             tail: None,
         });
 
-        let err = emit_with(&mut b, vec![Constraint::Equal(r.ty(), iface)])
-            .expect_err("interface-typed register must error");
+        let err =
+            emit_with(&mut b, vec![Constraint::Equal(r.ty(), iface)]).expect_err("interface-typed register must error");
         assert!(matches!(err, CodegenError::Unsupported(_)));
     }
 
@@ -1295,11 +1234,7 @@ mod tests {
 
         assert_eq!(solved.solver.apply(lt.ty()), Type::Bool);
         let c = solved.generate_code().expect("should emit");
-        assert!(
-            c.contains(&format!("bool {} =", lt)),
-            "lt should be bool:\n{}",
-            c
-        );
+        assert!(c.contains(&format!("bool {} =", lt)), "lt should be bool:\n{}", c);
     }
 
     #[test]
@@ -1317,11 +1252,7 @@ mod tests {
             "expected hoisted merge decl:\n{}",
             c
         );
-        assert!(
-            c.contains("if (") && c.contains("} else {"),
-            "expected if/else:\n{}",
-            c
-        );
+        assert!(c.contains("if (") && c.contains("} else {"), "expected if/else:\n{}", c);
         // dst assigned once per branch
         assert_eq!(
             c.matches(&format!("{} = ", dst)).count(),
@@ -1337,9 +1268,7 @@ mod tests {
         let mut b = InstructionBuilder::default();
         let ten = b.const_int(10);
         let zero = b.const_int(0);
-        let sum = b.for_acc(ten, zero, |b, index, acc| {
-            b.binop(BinOpKind::Add, acc, index)
-        });
+        let sum = b.for_acc(ten, zero, |b, index, acc| b.binop(BinOpKind::Add, acc, index));
         b.ret(sum);
 
         let c = emit(&mut b).expect("should emit");
