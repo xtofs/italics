@@ -593,7 +593,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 };
                 writeln!(
                     out,
-                    "{} {}{}= {}({});",
+                    "{} {}{} = {}({});",
                     self.ctype(ret.id),
                     ret,
                     unused,
@@ -1127,6 +1127,8 @@ mod tests {
         program.add_function(entry_fn);
 
         let c = emit_program_code(&program).expect("program should emit");
+
+        eprintln!("{}", c);
 
         assert!(c.contains("static int64_t helper(int64_t);"), "{}", c);
         assert!(c.contains("static int64_t helper(int64_t reg0)"), "{}", c);
