@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
 use crate::builder::InstructionBuilder;
-use crate::codegen::{CodegenError, CompilerError, emit_body, emit_code};
+use crate::codegen::{CodegenError, CompilerError, emit_body, emit_program_code};
 use crate::instructions::Instr;
 use crate::program::Program;
 use crate::registers::RegisterFile;
@@ -118,7 +118,9 @@ impl<'a> CBuild<'a> {
 
     /// Build from a whole [`Program`] (solved internally per function).
     pub fn from_program(name: impl Into<String>, program: &'a Program) -> Self {
-        Self::with_generator(name, move || emit_code(program).map_err(BuildError::from))
+        Self::with_generator(name, move || {
+            emit_program_code(program).map_err(BuildError::from)
+        })
     }
 
     /// Build from an [`InstructionBuilder`], running the whole inference →

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::fmt::Write as _;
+use std::fmt::{self, Error};
 
 use crate::indenting::IndentedWriter;
 use crate::instructions::Instr;
@@ -135,16 +135,6 @@ struct CodeGen<'a, 'b> {
     fns: Vec<FnDef>,
     fn_index: HashMap<(Vec<String>, String), usize>,
     reg_ctype: HashMap<RegId, String>,
-}
-
-#[derive(Clone, Copy)]
-enum ReturnStyle {
-    /// The `int main(void)` entry wrapper: print the result and exit `0`. The
-    /// program's value is observed on stdout, never smuggled through the process
-    /// exit status (which is only 8 bits and conflates result with success).
-    Main,
-    /// An ordinary function: return the value to its caller.
-    Function,
 }
 
 impl<'a, 'b> CodeGen<'a, 'b> {
@@ -303,28 +293,27 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         // Extern prototypes for LoadFunc names not defined by the prelude.
         self.emit_externs(body, &mut out, &HashMap::new())?;
 
-        // The body *is* `main`: it prints its result and exits 0.
-        self.emit_function_c(
-            &mut out,
-            "int main(void)",
-            body,
-            ReturnStyle::Main,
-            "return 0;",
-            &HashMap::new(),
-        )?;
+        // The body is the italics entry point, emitted as a normal function...
+        let entry_ret = self.entry_return_ctype(body);
+        let header = format!("static {} entry(void)", entry_ret);
+        let no_ret = format!("return {};", default_return_literal(&entry_ret));
+        self.emit_function_c(&mut out, &header, body, &no_ret, &HashMap::new())?;
+        out.push('\n');
+
+        // ...and the C entry point is a wrapper that calls it.
+        emit_c_main("entry", &entry_ret, &mut out);
 
         Ok(out)
     }
 
     /// Emit one C function — `<header> { <body> }` at translation-unit scope,
     /// indented, with `no_ret` appended when the body has no top-level `Ret`.
-    /// Shared by the `main` wrapper (single body) and every `static` definition.
+    /// Shared by every `static` definition and the single-body entry function.
     fn emit_function_c(
         &self,
         out: &mut String,
         header: &str,
         body: &[Instr],
-        return_style: ReturnStyle,
         no_ret: &str,
         signatures: &HashMap<String, CSignature>,
     ) -> Result<(), CodegenError> {
@@ -336,7 +325,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         writeln!(w, "{} {{", header).unwrap();
         w.indent();
         for instr in body {
-            self.emit_instr(instr, &mut w, &used, &mut saw_ret, return_style, signatures)?;
+            self.emit_instr(instr, &used, signatures, &mut w, &mut saw_ret)?;
         }
         if !saw_ret {
             writeln!(w, "{}", no_ret).unwrap();
@@ -344,6 +333,22 @@ impl<'a, 'b> CodeGen<'a, 'b> {
         w.dedent();
         writeln!(w, "}}").unwrap();
         Ok(())
+    }
+
+    /// The C return type of the single-body entry function: the type of the
+    /// value its top-level `Ret` yields (blocks can't contain one). Falls back
+    /// to `int64_t` when the body has no `Ret`, so the wrapper's `main` still
+    /// returns 0.
+    fn entry_return_ctype(&self, body: &[Instr]) -> String {
+        for instr in body {
+            if let Instr::Ret { src } = instr {
+                return match src {
+                    Some(r) => self.ctype(r.id).to_string(),
+                    None => "unit_t".to_string(),
+                };
+            }
+        }
+        "int64_t".to_string()
     }
 
     fn emit_supporting_type_defs(&self, out: &mut String) {
@@ -455,14 +460,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
 
         let header = format!("static {} {}({})", signature.ret, signature.name, params);
         let no_ret = format!("return {};", default_return_literal(&signature.ret));
-        self.emit_function_c(
-            &mut out,
-            &header,
-            body,
-            ReturnStyle::Function,
-            &no_ret,
-            signatures,
-        )?;
+        self.emit_function_c(&mut out, &header, body, &no_ret, signatures)?;
         out.push('\n');
         Ok(out)
     }
@@ -559,49 +557,13 @@ impl<'a, 'b> CodeGen<'a, 'b> {
     fn emit_instr<W: fmt::Write>(
         &self,
         instr: &Instr,
-        out: &mut IndentedWriter<W>,
-        used: &std::collections::HashSet<RegId>,
-        saw_ret: &mut bool,
-        return_style: ReturnStyle,
+        registers: &std::collections::HashSet<RegId>,
         signatures: &HashMap<String, CSignature>,
+        out: &mut IndentedWriter<W>,
+        saw_ret: &mut bool,
     ) -> Result<(), CodegenError> {
-        // Leading comment. Control-flow instructions render multi-line via
-        // `Display`, so give them a one-line header instead of dumping the
-        // whole block into a `//` comment.
-        match instr {
-            Instr::If(f) => {
-                let _ = writeln!(
-                    out,
-                    "// if {} -> {}: {}",
-                    f.cond,
-                    f.dst,
-                    self.solver.apply(f.dst.ty())
-                );
-            }
-            Instr::For(f) => {
-                let _ = writeln!(
-                    out,
-                    "// for {} in 0..{}, acc {}: {}",
-                    f.index,
-                    f.bound,
-                    f.acc,
-                    self.solver.apply(f.acc.ty())
-                );
-            }
-            _ => {
-                if let Some(dst) = instr.dst() {
-                    let _ = writeln!(
-                        out,
-                        "// {} // {}: {}",
-                        instr,
-                        dst,
-                        self.solver.apply(dst.ty())
-                    );
-                } else {
-                    let _ = writeln!(out, "// {}", instr);
-                }
-            }
-        }
+        // Leading comment
+        let _ = self.write_instruction_comment(instr, out);
 
         match instr {
             Instr::Const { dst, value } => {
@@ -654,7 +616,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
             }
             Instr::Call { func, args, ret } => {
                 let args: Vec<String> = args.iter().map(|r| format!("{}", r)).collect();
-                if used.contains(&ret.id) {
+                if registers.contains(&ret.id) {
                     writeln!(
                         out,
                         "{} {} = {}({});",
@@ -676,14 +638,14 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 writeln!(out, "if ({}) {{", f.cond).unwrap();
                 out.indent();
                 for i in &f.then_.instructions {
-                    self.emit_instr(i, out, used, saw_ret, return_style, signatures)?;
+                    self.emit_instr(i, registers, signatures, out, saw_ret)?;
                 }
                 writeln!(out, "{} = {};", f.dst, f.then_.result).unwrap();
                 out.dedent();
                 writeln!(out, "}} else {{").unwrap();
                 out.indent();
                 for i in &f.else_.instructions {
-                    self.emit_instr(i, out, used, saw_ret, return_style, signatures)?;
+                    self.emit_instr(i, registers, signatures, out, saw_ret)?;
                 }
                 writeln!(out, "{} = {};", f.dst, f.else_.result).unwrap();
                 out.dedent();
@@ -706,7 +668,7 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                 .unwrap();
                 out.indent();
                 for i in &f.body.instructions {
-                    self.emit_instr(i, out, used, saw_ret, return_style, signatures)?;
+                    self.emit_instr(i, registers, signatures, out, saw_ret)?;
                 }
                 writeln!(
                     out,
@@ -724,39 +686,58 @@ impl<'a, 'b> CodeGen<'a, 'b> {
                         "ret inside a block is not supported".to_string(),
                     ));
                 }
-                match return_style {
-                    // Entry wrapper: print the result (adapting to its type) and
-                    // exit 0.
-                    ReturnStyle::Main => {
-                        if let Some(r) = src {
-                            match self.ctype(r.id) {
-                                "int64_t" => {
-                                    writeln!(out, "printf(\"result: %lld\\n\", (long long){});", r)
-                                        .unwrap();
-                                }
-                                "bool" => {
-                                    writeln!(
-                                        out,
-                                        "printf(\"result: %s\\n\", {} ? \"true\" : \"false\");",
-                                        r
-                                    )
-                                    .unwrap();
-                                }
-                                // unit or other: nothing to print; consume the
-                                // value so it isn't flagged unused under -Wall.
-                                _ => writeln!(out, "(void){};", r).unwrap(),
-                            }
-                        }
-                        writeln!(out, "return 0;").unwrap();
-                    }
-                    // Ordinary function: return the value. A valueless `ret`
-                    // yields unit (the function's return type is `unit_t`).
-                    ReturnStyle::Function => match src {
-                        Some(r) => writeln!(out, "return {};", r).unwrap(),
-                        None => writeln!(out, "return UNIT;").unwrap(),
-                    },
+                // Return the value; a valueless `ret` yields unit (the function's
+                // return type is `unit_t`).
+                match src {
+                    Some(r) => writeln!(out, "return {};", r).unwrap(),
+                    None => writeln!(out, "return UNIT;").unwrap(),
                 }
                 *saw_ret = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// Leading comment. Control-flow instructions render multi-line via
+    /// `Display`, so give them a one-line header instead of dumping the
+    /// whole block into a `//` comment.
+    fn write_instruction_comment<W: fmt::Write>(
+        &self,
+        instr: &Instr,
+        out: &mut IndentedWriter<W>,
+    ) -> Result<(), Error> {
+        match instr {
+            Instr::If(f) => {
+                writeln!(
+                    out,
+                    "// if {} -> {}: {}",
+                    f.cond,
+                    f.dst,
+                    self.solver.apply(f.dst.ty())
+                )?;
+            }
+            Instr::For(f) => {
+                writeln!(
+                    out,
+                    "// for {} in 0..{}, acc {}: {}",
+                    f.index,
+                    f.bound,
+                    f.acc,
+                    self.solver.apply(f.acc.ty())
+                )?;
+            }
+            _ => {
+                if let Some(dst) = instr.dst() {
+                    writeln!(
+                        out,
+                        "// {} // {}: {}",
+                        instr,
+                        dst,
+                        self.solver.apply(dst.ty())
+                    )?;
+                } else {
+                    writeln!(out, "// {}", instr)?;
+                }
             }
         }
         Ok(())
@@ -773,6 +754,30 @@ fn default_return_literal(ret_ctype: &str) -> &'static str {
     } else {
         "0"
     }
+}
+
+/// Emit the C entry point: an `int main(void)` that calls the italics entry
+/// function `entry_c_name` and adapts its result to a process exit. The result
+/// is bound and printed only for the scalar types we know how to render;
+/// otherwise the entry is called for its side effects only (which also avoids an
+/// unused-variable warning under `-Wall`).
+fn emit_c_main(entry_c_name: &str, entry_ret_ctype: &str, out: &mut String) {
+    writeln!(out, "int main(void) {{").unwrap();
+    match entry_ret_ctype {
+        "int64_t" => {
+            writeln!(out, "    int64_t result = {}();", entry_c_name).unwrap();
+            out.push_str("    printf(\"result: %lld\\n\", result);\n");
+        }
+        "bool" => {
+            writeln!(out, "    bool result = {}();", entry_c_name).unwrap();
+            out.push_str("    printf(\"result: %s\\n\", result ? \"true\" : \"false\");\n");
+        }
+        _ => {
+            writeln!(out, "    {}();", entry_c_name).unwrap();
+        }
+    }
+    out.push_str("    return 0;\n");
+    out.push_str("}\n");
 }
 
 /// Emit a runnable C translation unit for `body`, taking every register's
@@ -810,7 +815,7 @@ fn sanitize_ident(s: &str) -> String {
 
 /// Emit a full C translation unit for an IR program with multiple internal
 /// function definitions and an explicit entry function.
-pub(crate) fn emit_code(program: &Program) -> Result<String, CompilerError> {
+pub(crate) fn emit_program_code(program: &Program) -> Result<String, CompilerError> {
     let mut seen_names = HashSet::new();
     for function in &program.functions {
         if !seen_names.insert(function.name.clone()) {
@@ -905,16 +910,7 @@ pub(crate) fn emit_code(program: &Program) -> Result<String, CompilerError> {
     }
 
     let entry = &signatures[&program.entry];
-    let entry_ret = &entry.ret;
-    writeln!(out, "int main(void) {{").unwrap();
-    writeln!(out, "    {} result = {}();", entry_ret, entry.name).unwrap();
-    if entry_ret == "int64_t" {
-        out.push_str("    printf(\"result: %lld\\n\", result);\n");
-    } else if entry_ret == "bool" {
-        out.push_str("    printf(\"result: %s\\n\", result ? \"true\" : \"false\");\n");
-    }
-    out.push_str("    return 0;\n");
-    out.push_str("}\n");
+    emit_c_main(&entry.name, &entry.ret, &mut out);
 
     Ok(out)
 }
@@ -1155,7 +1151,7 @@ mod tests {
         program.add_function(helper_fn);
         program.add_function(entry_fn);
 
-        let c = emit_code(&program).expect("program should emit");
+        let c = emit_program_code(&program).expect("program should emit");
 
         assert!(c.contains("static int64_t helper(void);"), "{}", c);
         // The entry function is named `main` in the IR; `main` is reserved for
@@ -1191,7 +1187,7 @@ mod tests {
         program.add_function(helper_fn);
         program.add_function(entry_fn);
 
-        let c = emit_code(&program).expect("program should emit");
+        let c = emit_program_code(&program).expect("program should emit");
 
         assert!(c.contains("static int64_t helper(int64_t);"), "{}", c);
         assert!(c.contains("static int64_t helper(int64_t reg0)"), "{}", c);
@@ -1209,7 +1205,7 @@ mod tests {
         let mut program = Program::new("main");
         program.add_function(f);
 
-        let err = emit_code(&program).expect_err("missing entry must fail");
+        let err = emit_program_code(&program).expect_err("missing entry must fail");
         assert!(matches!(err, CompilerError::MissingEntry(_)));
     }
 
@@ -1244,7 +1240,7 @@ mod tests {
         program.add_function(mk_fn);
         program.add_function(entry_fn);
 
-        let c = emit_code(&program).expect("program should emit");
+        let c = emit_program_code(&program).expect("program should emit");
 
         assert!(c.contains("static unit_t greet(void)"), "{}", c);
         assert!(c.contains("static unit_t mk_unit(void)"), "{}", c);
@@ -1263,7 +1259,7 @@ mod tests {
         let mut program = Program::new("bad");
         program.add_function(f);
 
-        let err = emit_code(&program).expect_err("ret_unit in an int fn must fail");
+        let err = emit_program_code(&program).expect_err("ret_unit in an int fn must fail");
         assert!(matches!(err, CompilerError::Type(_)), "{:?}", err);
     }
 
