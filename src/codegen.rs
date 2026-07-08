@@ -19,7 +19,7 @@ const PREAMBLE: &str = "\
 #include <stdlib.h>
 
 typedef struct { char _; } unit_t;
-#define UNIT (unit_t){0}
+static const unit_t UNIT = {0};
 
 ";
 
@@ -1233,7 +1233,7 @@ mod tests {
 
         assert!(c.contains("static unit_t greet(void)"), "{}", c);
         assert!(c.contains("static unit_t mk_unit(void)"), "{}", c);
-        assert!(c.contains("#define UNIT (unit_t){0}"), "{}", c);
+        assert!(c.contains("static const unit_t UNIT = {0};"), "{}", c);
         assert!(c.contains("return UNIT;"), "{}", c);
         assert!(!c.contains("return (unit_t){0};"), "{}", c);
     }
