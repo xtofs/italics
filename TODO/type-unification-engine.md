@@ -1,0 +1,21 @@
+# Type unification engine
+
+- **Implement `Solver::unify` properly**
+  - Handle `Unknown(TypeVar)`:
+    - If one side is `Unknown(tv)` and the other is concrete, bind `tv` to the concrete type.
+    - If both sides are `Unknown(tv1, tv2)`, unify their substitutions.
+  - Handle `Int`, `Bool`, `Ptr`:
+    - `Ptr` requires recursive unification of the pointee type.
+  - Handle `Func(FuncType)`:
+    - Unify parameter lists element-wise.
+    - Unify return types.
+    - Unify optional stack typing if present.
+  - Handle `Record(Row)` and `Interface(Row)`:
+    - Row unification:
+      - unify fields with same names.
+      - handle tails (`tail: Option<TypeVar>`) for open rows.
+  - Handle `Existential(Existential)`:
+    - Respect scoping of existential type variables.
+    - Unify existential packages only when compatible.
+  - Handle `Stack(Vec<Type>)`:
+    - Unify element-wise.
